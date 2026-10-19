@@ -1,5 +1,7 @@
+using Jellyfin.Plugin.LiveTvAccess.Filters;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.LiveTvAccess;
@@ -14,5 +16,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
         serviceCollection.AddHostedService<StartupLogService>();
+
+        // Global MVC action filter. Options configuration is order-independent, so this applies even though
+        // Jellyfin's own AddMvc runs later (Jellyfin.Server/Extensions/ApiServiceCollectionExtensions.cs:123).
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.Add<LiveTvRequestLogFilter>());
     }
 }

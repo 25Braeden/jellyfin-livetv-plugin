@@ -188,11 +188,23 @@ refresh; TunerCount=1 blocks a second channel; Jellyfin shares the same channel'
   A or C.
 - The stream-limit error is a generic HTTP 500 (`BaseTunerHost.cs:222` -> `ExceptionMiddleware`).
 
-**Still unverified (Gate 1 / later must confirm):**
-- A plugin can add an MVC action filter via `services.Configure<MvcOptions>` from
-  `IPluginServiceRegistrator`, and it runs for core controllers.
-- `Jellyfin.Controller` / `Jellyfin.Model` 10.11.11 exist on NuGet (not checked: no remote access).
-- Plugins can register `IStartupFilter` / middleware the same way.
+**Verified at Gate 1 / Gate 2 (2026-10-19):**
+- `Jellyfin.Controller` / `Jellyfin.Model` 10.11.11 exist on nuget.org; the plugin pins them.
+- Plugin loads (Active), `IHostedService` registered from `IPluginServiceRegistrator` runs.
+- A global MVC action filter added with `services.Configure<MvcOptions>(o => o.Filters.Add<T>())` from
+  `IPluginServiceRegistrator` runs on core controllers (`MediaInfoController`, `LiveTvController`) and
+  sees the authenticated user via the `Jellyfin-UserId` claim (`CustomAuthenticationHandler.cs:64`).
+  Logged the right user for A, B and C on PlaybackInfo, LiveStreams/Open and LiveTv/Channels.
+- Requests rejected by authorization (C on `/LiveTv/*`, 403) never reach action filters.
+- API-key requests have an empty user ID and `Jellyfin-IsApiKey=True`: Gate 3 must let them through.
+
+**Version-fragile details the plugin now depends on:** claim names `Jellyfin-UserId` /
+`Jellyfin-IsApiKey` (`Jellyfin.Api/Constants/InternalClaimTypes.cs`, not on NuGet); route templates
+`Items/{itemId}/PlaybackInfo`, `LiveStreams/Open`, `LiveTv/Channels`; action argument names `itemId`,
+`openToken`, `openLiveStreamDto`; `OpenLiveStreamDto` read by reflection (not on NuGet).
+
+**Still unverified:**
+- Plugins can register `IStartupFilter` / middleware the same way (not needed so far).
 - Sharing against the real production provider (the fake `.ts` provider confirmed one pull).
 - Stale stream after a client crash: how long the slot stays held.
-- Real clients (web, Android TV, iOS) use the same endpoints as the script (Gate 5).
+- Real clients (web, Android TV, iOS) use the same endpoints as the scripts (Gate 5).
