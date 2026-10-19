@@ -193,7 +193,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG11_StopAsync_WaitsForRunningSync()
     {
         var w = new World();
@@ -223,7 +222,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task N1_StartAsync_DoesNotBlockOnInitialSync()
     {
         // New (not in either review): StartAsync runs the startup sync synchronously up to its first await,

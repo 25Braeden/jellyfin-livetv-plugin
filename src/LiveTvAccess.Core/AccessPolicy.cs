@@ -15,12 +15,28 @@ public static class AccessPolicy
     /// <param name="targetTunerKey">The tuner the channel/stream belongs to, or <c>null</c> if unknown.</param>
     /// <returns>The decision.</returns>
     public static AccessDecision Decide(Caller caller, UserTunerMap map, string? targetTunerKey)
+        => Decide(caller, map, targetTunerKey, isReady: true);
+
+    /// <summary>
+    /// Decides whether a caller may use a channel or stream on a given tuner.
+    /// </summary>
+    /// <param name="caller">The caller.</param>
+    /// <param name="map">The user-to-tuner map.</param>
+    /// <param name="targetTunerKey">The tuner the channel/stream belongs to, or <c>null</c> if unknown.</param>
+    /// <param name="isReady">Whether the plugin's first sync has completed; until then non-admins are denied.</param>
+    /// <returns>The decision.</returns>
+    public static AccessDecision Decide(Caller caller, UserTunerMap map, string? targetTunerKey, bool isReady)
     {
         ArgumentNullException.ThrowIfNull(map);
 
         if (caller.IsAdministrator || (caller.IsApiKey && caller.UserId == Guid.Empty))
         {
             return AccessDecision.Allow;
+        }
+
+        if (!isReady)
+        {
+            return AccessDecision.DenyNotReady;
         }
 
         var own = map.GetTuner(caller.UserId);
@@ -49,6 +65,7 @@ public static class AccessPolicy
         AccessDecision.DenyNoTuner => "Live TV is not available for your account.",
         AccessDecision.DenyOtherTuner => "This channel is not available for your account.",
         AccessDecision.DenyUnknownTuner => "This channel is not available: its tuner is not configured.",
+        AccessDecision.DenyNotReady => "Live TV is starting up. Try again in a moment.",
         _ => string.Empty,
     };
 }

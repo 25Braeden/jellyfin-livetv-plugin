@@ -6,6 +6,7 @@ using MediaBrowser.Controller.LiveTv;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.LiveTvAccess.Filters;
@@ -31,16 +32,19 @@ public class LiveTvAccessFilter : IAsyncActionFilter
     private static readonly string[] _bodyProperties = ["ItemId", "LiveStreamId", "OpenToken"];
 
     private readonly AccessService _access;
+    private readonly ISyncSignals _sync;
     private readonly ILogger<LiveTvAccessFilter> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LiveTvAccessFilter"/> class.
     /// </summary>
     /// <param name="access">The access service.</param>
+    /// <param name="sync">The tag-sync worker (readiness, re-sync requests).</param>
     /// <param name="logger">Instance of the <see cref="ILogger{LiveTvAccessFilter}"/> interface.</param>
-    public LiveTvAccessFilter(AccessService access, ILogger<LiveTvAccessFilter> logger)
+    public LiveTvAccessFilter(AccessService access, ISyncSignals sync, ILogger<LiveTvAccessFilter> logger)
     {
         _access = access;
+        _sync = sync;
         _logger = logger;
     }
 
@@ -95,6 +99,13 @@ public class LiveTvAccessFilter : IAsyncActionFilter
                 "Your tuner is busy with another live stream. Stop it and try again.");
             executed.ExceptionHandled = true;
         }
+
+        // Jellyfin publishes no event for user policy edits (UserManager.UpdatePolicyAsync), so a successful
+        // admin / API-key write to /Users/* (policy, user update) requests a users pass instead.
+        if (caller is { } admin && (admin.IsAdministrator || admin.IsApiKey) && IsUserWrite(context) && Succeeded(executed))
+        {
+            _sync.MarkUsersDirty("user write " + context.ActionDescriptor.AttributeRouteInfo?.Template);
+        }
     }
 
     private static IEnumerable<(TargetKind Kind, string Value)> GetTargets(IDictionary<string, object?> arguments)
@@ -148,6 +159,27 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         }
     }
 
+    private static bool IsUserWrite(ActionExecutingContext context)
+    {
+        var template = context.ActionDescriptor.AttributeRouteInfo?.Template?.TrimStart('/') ?? string.Empty;
+        return !HttpMethods.IsGet(context.HttpContext.Request.Method)
+            && !HttpMethods.IsHead(context.HttpContext.Request.Method)
+            && (template.Equals("Users", StringComparison.OrdinalIgnoreCase)
+                || template.StartsWith("Users/", StringComparison.OrdinalIgnoreCase))
+            && !template.Contains("Authenticate", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool Succeeded(ActionExecutedContext executed)
+    {
+        if (executed.Exception is not null && !executed.ExceptionHandled)
+        {
+            return false;
+        }
+
+        var status = (executed.Result as IStatusCodeActionResult)?.StatusCode;
+        return status is null or < 400;
+    }
+
     private static bool IsTunerConflict(Exception exception)
     {
         for (var e = exception; e is not null; e = e.InnerException)
@@ -189,6 +221,6 @@ public class LiveTvAccessFilter : IAsyncActionFilter
                 break;
         }
 
-        return (AccessPolicy.Decide(caller, _access.Map, tuner), isLiveTv);
+        return (AccessPolicy.Decide(caller, _access.Map, tuner, _sync.IsReady), isLiveTv);
     }
 }

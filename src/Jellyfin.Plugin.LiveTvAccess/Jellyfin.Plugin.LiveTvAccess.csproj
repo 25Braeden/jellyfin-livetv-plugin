@@ -24,6 +24,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Jellyfin.Plugin.LiveTvAccess.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../LiveTvAccess.Core/LiveTvAccess.Core.csproj" />
   </ItemGroup>
 

@@ -1,5 +1,7 @@
+using Jellyfin.Data.Events.Users;
 using Jellyfin.Plugin.LiveTvAccess.Filters;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,7 +19,14 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddHostedService<StartupLogService>();
         serviceCollection.AddSingleton<AccessService>();
-        serviceCollection.AddHostedService<TagSyncService>();
+        // One worker instance: hosted (start/stop) and injectable as ISyncSignals (filter, event consumers).
+        serviceCollection.AddSingleton<TagSyncService>();
+        serviceCollection.AddSingleton<ISyncSignals>(sp => sp.GetRequiredService<TagSyncService>());
+        serviceCollection.AddHostedService(sp => sp.GetRequiredService<TagSyncService>());
+
+        // Jellyfin resolves event consumers from DI (Jellyfin.Server.Implementations/Events/EventManager.cs:46-52).
+        serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, UserEventsConsumer>();
+        serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserEventsConsumer>();
 
         // Global MVC action filter. Options configuration is order-independent, so this applies even though
         // Jellyfin's own AddMvc runs later (Jellyfin.Server/Extensions/ApiServiceCollectionExtensions.cs:123).

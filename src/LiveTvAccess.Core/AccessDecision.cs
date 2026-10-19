@@ -16,4 +16,7 @@ public enum AccessDecision
 
     /// <summary>The plugin could not tell which tuner the channel/stream belongs to (fail closed).</summary>
     DenyUnknownTuner,
+
+    /// <summary>The plugin has not completed its first sync yet (fail closed).</summary>
+    DenyNotReady,
 }

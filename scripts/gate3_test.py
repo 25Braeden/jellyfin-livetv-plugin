@@ -240,6 +240,22 @@ def main():
         n.run_task(admin, "RefreshGuide")
     check("fixture restored and channels re-tagged", wait_for(lambda: tags_match(admin, aid, n.expected_channels())))
 
+    print("== 11. sync triggers (user created, admin policy edit)")
+    st, dave = admin.post("/Users/New", {"Name": "gate3-temp-user"})
+    check("admin creates a user", st == 200, f"HTTP {st}")
+    if st == 200:
+        try:
+            check("new user gets blocked tags (UserCreated event)", wait_for(lambda: sorted(
+                n.users_by_name(admin)["gate3-temp-user"]["Policy"]["BlockedTags"]) ==
+                ["livetv-tuner1", "livetv-tuner2", "livetv-unassigned"], timeout=20))
+        finally:
+            admin.call("DELETE", f"/Users/{dave['Id']}")
+    pol = n.users_by_name(admin)["A"]["Policy"]
+    pol["BlockedTags"] = []
+    n.ok(admin.post(f"/Users/{n.users_by_name(admin)['A']['Id']}/Policy", pol), "clear A's tags")
+    check("admin policy edit re-synced (A's blocked tags restored)", wait_for(lambda: sorted(
+        n.users_by_name(admin)["A"]["Policy"]["BlockedTags"]) == ["livetv-tuner2", "livetv-unassigned"], timeout=20))
+
     print("== 10. logging")
     time.sleep(1)
     log = subprocess.run(["docker", "logs", "--since", since, "jellyfin-dev"], capture_output=True, text=True)

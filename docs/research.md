@@ -286,3 +286,31 @@ API-key path, which takes the same branch.
 - **Upgrade note:** a config saved before this change has names but no ids, so those users get no tuner
   until the config is saved again (fail closed, logged as "has no user id"). No automatic name lookup
   at load time, by design. After deploying, re-save the plugin config once.
+
+## Gate 3.5 phase 2, fix 2: tag-sync worker lifecycle (2026-10-19)
+
+- **Startup:** `StartAsync` only subscribes and starts one worker on the thread pool; the first sync
+  no longer runs on Jellyfin's host-start thread (verified in the log: "waiting" on the host thread,
+  the pass on a worker thread, both before "Startup complete"). Until the first full pass (users and
+  channels) succeeds, `IsReady` is false and the filter denies protected operations for non-admins
+  (`AccessDecision.DenyNotReady`, "Live TV is starting up"). Failed passes retry with backoff
+  (2 s doubling to 1 min) and stay closed.
+- **One worker, coalesced flags:** triggers only set "users dirty" / "channels dirty" and wake the
+  worker; any burst becomes at most one more pass. The service doesn't subscribe to `OnUserUpdated`, and
+  `UpdateUserAsync` publishes nothing, so its own user writes never queue a pass.
+- **Shutdown:** `StopAsync` cancels the worker and awaits it (bounded by the host's shutdown token);
+  `Dispose` is idempotent and safe after stop.
+- **Paging:** channel ids are fetched once (`ILibraryManager.GetItemIds`), then loaded and retagged
+  500 at a time. A user change that arrives mid-pass is applied after the current page, not after the
+  whole channel pass.
+- **Re-sync triggers chosen:**
+  - user created / deleted: `IEventConsumer<UserCreatedEventArgs>` / `<UserDeletedEventArgs>`, published at
+    `UserManager.cs:322` / `:373` and resolved from DI (`EventManager.cs:46-52`). Verified live.
+  - admin policy edits: **no Jellyfin event exists** (`UserManager.UpdatePolicyAsync`, `UserManager.cs:803`,
+    publishes nothing). The filter marks users dirty after any successful admin/API-key write to
+    `/Users/*` (excluding authentication). Verified live: clearing A's blocked tags via
+    `POST /Users/{id}/Policy` is undone within seconds.
+  - backstop: a periodic users-only pass every 15 minutes, for edits that bypass the HTTP API.
+- **Bug found while testing:** the channel pass set `Tags` on Jellyfin's cached item before saving. If the
+  save failed, the cached item looked tagged, later passes skipped it, and the tag was never persisted.
+  Fixed by restoring the old tags on failure; regression test fails without the fix.
