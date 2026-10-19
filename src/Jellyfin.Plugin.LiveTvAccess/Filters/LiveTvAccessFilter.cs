@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using LiveTvAccess.Core;
 using MediaBrowser.Controller.LiveTv;
@@ -62,11 +63,14 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         ArgumentNullException.ThrowIfNull(next);
 
         // Anonymous requests: Jellyfin's own authorization decides (streaming endpoints require auth).
+        var started = Stopwatch.GetTimestamp();
         var caller = _access.GetCaller(context.HttpContext.User);
         if (caller is { } c && !c.IsAdministrator && !c.IsApiKey)
         {
+            var targets = 0;
             foreach (var (kind, value) in GetTargets(context.ActionArguments))
             {
+                targets++;
                 var (decision, isLiveTv) = Check(c, kind, value);
                 if (!isLiveTv || decision == AccessDecision.Allow)
                 {
@@ -82,7 +86,13 @@ public class LiveTvAccessFilter : IAsyncActionFilter
                     kind,
                     kind == TargetKind.Item ? value : Redact.ShortHash(value));
                 context.Result = PlainText(StatusCodes.Status403Forbidden, AccessPolicy.Message(decision));
+                LogCheckTime(started, targets, denied: true);
                 return;
+            }
+
+            if (targets > 0)
+            {
+                LogCheckTime(started, targets, denied: false);
             }
         }
 
@@ -156,6 +166,18 @@ public class LiveTvAccessFilter : IAsyncActionFilter
                     }
                 }
             }
+        }
+    }
+
+    private void LogCheckTime(long started, int targets, bool denied)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "LiveTvAccess: check took {Microseconds} us for {Targets} target(s), denied={Denied}",
+                (long)Stopwatch.GetElapsedTime(started).TotalMicroseconds,
+                targets,
+                denied);
         }
     }
 

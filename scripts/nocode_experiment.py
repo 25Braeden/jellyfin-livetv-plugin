@@ -16,6 +16,7 @@ Usage:
 import datetime as dt
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -28,7 +29,16 @@ import uuid
 
 BASE = "http://localhost:8096"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TUNERS = {"tuner1": "/tuners/tuner1.m3u", "tuner2": "/tuners/tuner2.m3u"}
+# LIVETV_FIXTURES=scale switches to the generated (gitignored) playlists in tuners/scale/.
+FIXTURES = os.environ.get("LIVETV_FIXTURES", "").strip("/")
+_SUB = f"{FIXTURES}/" if FIXTURES else ""
+TUNERS = {"tuner1": f"/tuners/{_SUB}tuner1.m3u", "tuner2": f"/tuners/{_SUB}tuner2.m3u"}
+
+
+def tuner_file(tuner):
+    """Local path of a tuner's playlist (the container sees it at TUNERS[tuner])."""
+    return ROOT / "tuners" / _SUB / f"{tuner}.m3u"
+
 TAGS = {"tuner1": "livetv-tuner1", "tuner2": "livetv-tuner2"}
 BLOCKED = {"A": ["livetv-tuner2"], "B": ["livetv-tuner1"]}
 GUIDE_FILE = ROOT / "tuners" / "guide.xml"  # gitignored (tuners/*)
@@ -106,7 +116,7 @@ def expected_channels():
     LiveTvDtoService.cs:403-408, LibraryManager.cs:636-657."""
     out = {}
     for tuner, url in TUNERS.items():
-        lines = (ROOT / "tuners" / f"{tuner}.m3u").read_text().splitlines()
+        lines = tuner_file(tuner).read_text().splitlines()
         for i, line in enumerate(lines):
             if line.startswith("#EXTINF") and i + 1 < len(lines):
                 ext = "m3u_" + dotnet_md5_guid(url) + dotnet_md5_guid(lines[i + 1].strip())
@@ -125,12 +135,12 @@ def users_by_name(admin):
     return {u["Name"]: u for u in ok(admin.get("/Users"), "list users")}
 
 
-def run_task(admin, key):
+def run_task(admin, key, timeout_s=1800):
     tasks = ok(admin.get("/ScheduledTasks"), "list tasks")
     task = next(t for t in tasks if t.get("Key") == key)
     ok(admin.post(f"/ScheduledTasks/Running/{task['Id']}"), f"start {key}")
     time.sleep(2)
-    for _ in range(120):
+    for _ in range(timeout_s):
         t = ok(admin.get(f"/ScheduledTasks/{task['Id']}"), "task state")
         if t["State"] == "Idle":
             return t.get("LastExecutionResult", {}).get("Status")
@@ -142,7 +152,7 @@ def write_guide():
     """Hourly programs from 1h ago to +5h for every tvg-id in the fixtures."""
     ids = []
     for tuner in TUNERS:
-        for line in (ROOT / "tuners" / f"{tuner}.m3u").read_text().splitlines():
+        for line in tuner_file(tuner).read_text().splitlines():
             if 'tvg-id="' in line:
                 tid = line.split('tvg-id="', 1)[1].split('"', 1)[0]
                 if tid not in ids:

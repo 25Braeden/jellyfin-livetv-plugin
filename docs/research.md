@@ -314,3 +314,46 @@ API-key path, which takes the same branch.
 - **Bug found while testing:** the channel pass set `Tags` on Jellyfin's cached item before saving. If the
   save failed, the cached item looked tagged, later passes skipped it, and the tag was never persisted.
   Fixed by restoring the old tags on failure; regression test fails without the fix.
+
+## Scale test: 16,000 channels (2026-10-19)
+
+Setup: `scripts/scale_test.py gen` writes `tuners/scale/tuner{1,2}.m3u` (gitignored), 8,000 channels per
+tuner, all stream URLs unique, ~40% of the lineup shared between the two tuners, groups spread evenly.
+Docker Desktop on an arm64 Mac (14 CPUs, 7.7 GiB for the VM). Plugin build with timing logs.
+
+| Measurement | Result |
+|---|---|
+| Plugin: first sync of 16,000 untagged channels | **52.9 s**, 33 pages of 500; container memory 438 → 453 MiB peak |
+| Plugin: re-sync, nothing changed | **0.57–0.59 s** (users ~13 ms, channels ~570 ms) |
+| Plugin: re-sync after 1,000 stream URLs changed | **5.6 s**, 1,000 channels retagged (35 pages); memory peak 580 MiB |
+| Restart to ready (~17,000 channels) | Plugin's first sync completes 2.8–3.1 s after restart, before Jellyfin is healthy; A and B get PlaybackInfo 200 at 7.2–7.6 s (the moment Jellyfin is healthy); no request was ever denied as "starting up" |
+| Jellyfin's own startup | "Startup complete" 6.96–6.98 s vs 6.56 s with 7 channels; the plugin's sync runs on a worker thread, so it doesn't delay startup |
+| Filter check on PlaybackInfo (own cost) | median **~2.2 ms**, p95 2.7–3.2 ms, worst 5.6 ms (allowed and denied alike; n=200 per case) |
+| PlaybackInfo end-to-end | allowed: median 10.4–11.0 ms; denied: median 7.6 ms; two early outliers (154 ms, 327 ms) after a restart, consistent with warm-up |
+| Channel list, A and B (8,500 channels each) | first page of 100: **55 ms**; full list: **~394 ms**; only the user's own tuner |
+| Guide grid / On Now | Not meaningful: no guide data was loaded at this size (see below) |
+| Gate 3 acceptance script at this size | **Not measured** (needs two full guide refreshes; impractical at this size) |
+
+**Jellyfin's guide refresh is quadratic in the number of channels; this is Jellyfin, not the plugin.**
+Channel creation is fast (16,007 channels in ~36 s). The per-channel guide phase is the problem: for each
+channel, `GuideManager.cs:220-236` calls `DefaultLiveTvService.GetProgramsAsync`, which rebuilds the full
+channel list from both tuners and re-applies guide matching to every channel
+(`DefaultLiveTvService.cs:448-455`, `ListingsManager.cs:171-184`). The XMLTV provider also re-reads the whole
+guide file per channel (`XmlTvListingsProvider.cs:138-151`). Measured:
+- full 13 MB guide (12,801 guide channels, 76,806 programmes): 17.9% after 2 h 24 min (~13 h projected); cancelled
+- 5 KB guide (6 channels): 18.5% after ~30 min; cancelled after 80 min
+- no guide provider at all: 25% after ~17 min, still running; it ignored cancellation for 10+ minutes and was
+  ended by a restart
+
+The plugin re-tags channels only after a guide refresh completes (that's when Jellyfin creates or re-creates
+channels), so at this size new channels could wait hours for their tags. Playback is still enforced in the
+meantime, because the filter resolves the tuner from the channel itself, not from tags.
+
+Restoring the 7-channel fixtures afterwards: the refresh that deleted ~17,000 channel items took ~4 min 49 s;
+the next refresh took 4 s. Gate 3 acceptance then passed 45/45.
+
+**Options (no design change made):**
+1. **Import only wanted channels** (filter the M3U before Jellyfin sees it). The quadratic cost makes this the
+   main lever; a few hundred channels per tuner is fast.
+2. Keep the guide provider limited to the channels in use, and run the guide refresh off-peak.
+3. Consider the reverse-proxy layer or an M3U-filtering proxy in front of the provider for curation.

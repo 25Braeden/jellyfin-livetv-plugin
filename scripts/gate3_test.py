@@ -25,10 +25,12 @@ import nocode_experiment as n  # noqa: E402
 
 PLUGIN_ID = "4d5aa36c91644f4dba7f0fa6c25bfd28"
 CONFIG = {
-    "Tuners": [{"Key": "tuner1", "Url": "/tuners/tuner1.m3u"}, {"Key": "tuner2", "Url": "/tuners/tuner2.m3u"}],
+    "Tuners": [{"Key": k, "Url": url} for k, url in n.TUNERS.items()],
     "Users": [{"UserName": "A", "TunerKey": "tuner1"}, {"UserName": "B", "TunerKey": "tuner2"}],
 }
-TUNER2_M3U = n.ROOT / "tuners" / "tuner2.m3u"
+TUNER2_M3U = n.tuner_file("tuner2")
+# The original hand-written test channels (present in both the small and the scale fixtures).
+TEST_CHANNELS = {"Test News", "Test Sports", "Shared Channel", "Test Live TS", "Test Movies", "Test Kids"}
 results = []
 
 
@@ -73,10 +75,9 @@ def wait_for(predicate, timeout=30):
 
 
 def channel_tags(admin, aid):
-    out = {}
-    for c in n.ok(admin.get("/LiveTv/Channels", userId=aid), "channels")["Items"]:
-        out[c["Id"]] = n.ok(admin.get(f"/Items/{c['Id']}", userId=aid), "item").get("Tags", [])
-    return out
+    # One bulk query (works at 16k channels) instead of one request per channel.
+    items = n.ok(admin.call("GET", "/LiveTv/Channels", query={"userId": aid, "fields": "Tags"}, timeout=300), "channels")["Items"]
+    return {c["Id"]: c.get("Tags", []) for c in items}
 
 
 def tags_match(admin, aid, expected):
@@ -218,7 +219,7 @@ def main():
     time.sleep(2)
 
     print("== 8. A's allowed channels still play (HLS segment)")
-    for cid in sorted(t1, key=lambda c: expected[c][1]):
+    for cid in sorted((c for c in t1 if expected[c][1] in TEST_CHANNELS), key=lambda c: expected[c][1]):
         ok, detail = plays(A, a_uid, cid)
         check(f"A plays {expected[cid][1]}", ok, detail)
 

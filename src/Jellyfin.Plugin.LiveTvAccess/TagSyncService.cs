@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -259,13 +260,18 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
 
     private async Task PassAsync(bool users, bool channels, CancellationToken ct)
     {
+        var started = Stopwatch.GetTimestamp();
         var updatedUsers = users ? await SyncUsersAsync(ct).ConfigureAwait(false) : 0;
+        var usersDone = Stopwatch.GetTimestamp();
         var (pages, retagged, midPassUsers) = channels ? await SyncChannelsAsync(ct).ConfigureAwait(false) : (0, 0, 0);
         _logger.LogInformation(
-            "LiveTvAccess: sync pass: {Channels} channel(s) retagged in {Pages} page(s), {Users} user(s) updated",
+            "LiveTvAccess: sync pass: {Channels} channel(s) retagged in {Pages} page(s), {Users} user(s) updated; took {TotalMs} ms (users {UsersMs} ms, channels {ChannelsMs} ms)",
             retagged,
             pages,
-            updatedUsers + midPassUsers);
+            updatedUsers + midPassUsers,
+            (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            (long)Stopwatch.GetElapsedTime(started, usersDone).TotalMilliseconds,
+            (long)Stopwatch.GetElapsedTime(usersDone).TotalMilliseconds);
     }
 
     private async Task<(int Pages, int Retagged, int Users)> SyncChannelsAsync(CancellationToken ct)
