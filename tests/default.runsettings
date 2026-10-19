@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default test run: excludes tests for reproduced-but-unfixed findings (Category=KnownIssue).
+     To run only those, pass the dotnet test filter option with Category=KnownIssue. -->
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>Category!=KnownIssue</TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

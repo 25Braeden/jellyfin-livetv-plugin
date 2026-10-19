@@ -3,6 +3,7 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <RunSettingsFilePath>$(MSBuildThisFileDirectory)../default.runsettings</RunSettingsFilePath>
     <!-- Test method names use underscores. -->
     <NoWarn>$(NoWarn);CA1707</NoWarn>
   </PropertyGroup>

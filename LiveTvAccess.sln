@@ -11,6 +11,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jellyfin.Plugin.LiveTvAcces
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveTvAccess.Core.Tests", "tests\LiveTvAccess.Core.Tests\LiveTvAccess.Core.Tests.csproj", "{B62CE16D-0A58-4813-AB79-92255166E491}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jellyfin.Plugin.LiveTvAccess.Tests", "tests\Jellyfin.Plugin.LiveTvAccess.Tests\Jellyfin.Plugin.LiveTvAccess.Tests.csproj", "{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -57,6 +61,18 @@ Global
 		{B62CE16D-0A58-4813-AB79-92255166E491}.Release|x64.Build.0 = Release|Any CPU
 		{B62CE16D-0A58-4813-AB79-92255166E491}.Release|x86.ActiveCfg = Release|Any CPU
 		{B62CE16D-0A58-4813-AB79-92255166E491}.Release|x86.Build.0 = Release|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Debug|x64.Build.0 = Debug|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Debug|x86.Build.0 = Debug|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Release|x64.ActiveCfg = Release|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Release|x64.Build.0 = Release|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Release|x86.ActiveCfg = Release|Any CPU
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -65,5 +81,6 @@ Global
 		{5538EDC4-DC57-4FD1-98D4-91120A9D036C} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{A0E1BD2B-6163-4703-8905-F39175998867} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{B62CE16D-0A58-4813-AB79-92255166E491} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{B5F1EA48-FF61-4F0C-BCE9-AA24D3C6893E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Runs only tests for reproduced-but-unfixed findings: dotnet test with the settings option pointing here. -->
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>Category=KnownIssue</TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

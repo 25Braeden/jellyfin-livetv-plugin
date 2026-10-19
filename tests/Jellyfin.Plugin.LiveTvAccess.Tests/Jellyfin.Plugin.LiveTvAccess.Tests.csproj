@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RunSettingsFilePath>$(MSBuildThisFileDirectory)../default.runsettings</RunSettingsFilePath>
+    <!-- Test code: underscores in names, no doc comments, plain asserts, test-only fakes. -->
+    <NoWarn>$(NoWarn);CA1707;CA1515;CA1002;CA1031;CA2007;CA1062;CA1849;CA2000;CA1001;CA1305;CA1307;CA1309;CA1310;CA5394;CA1859;CA1822;CA1852;CA2201;CA1063;CA1816;CA1812;CA1000</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="All" />
+    <!-- Runtime assets needed in tests (the plugin itself excludes them). -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.11" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.11" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Jellyfin.Plugin.LiveTvAccess/Jellyfin.Plugin.LiveTvAccess.csproj" />
+  </ItemGroup>
+
+</Project>
