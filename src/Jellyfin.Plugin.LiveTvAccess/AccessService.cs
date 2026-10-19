@@ -153,34 +153,38 @@ public class AccessService
 
     private (TunerCatalog Catalog, UserTunerMap Map) Build(PluginConfiguration config)
     {
+        TunerCatalog catalog;
         try
         {
-            var catalog = new TunerCatalog(config.Tuners.Select(t => new KeyValuePair<string, string>(t.Key, t.Url)));
-            var assignments = new List<KeyValuePair<Guid, string>>();
-            foreach (var entry in config.Users)
-            {
-                var user = _userManager.GetUserByName(entry.UserName);
-                if (user is null)
-                {
-                    _logger.LogWarning("LiveTvAccess: configured user {UserName} does not exist; ignored", entry.UserName);
-                    continue;
-                }
-
-                assignments.Add(new KeyValuePair<Guid, string>(user.Id, entry.TunerKey));
-            }
-
-            var map = new UserTunerMap(catalog.Keys, assignments);
-            _logger.LogInformation(
-                "LiveTvAccess: config loaded, tuners [{Tuners}], {Count} user assignment(s)",
-                string.Join(", ", catalog.Keys),
-                assignments.Count);
-            return (catalog, map);
+            var tuners = (config.Tuners ?? []).Where(t => t is not null);
+            catalog = new TunerCatalog(tuners.Select(t => new KeyValuePair<string, string>(t.Key, t.Url)));
         }
         catch (ArgumentException ex)
         {
-            // Fail closed: an invalid config means nobody (except admins / API keys) gets a tuner.
-            _logger.LogError(ex, "LiveTvAccess: invalid configuration; all non-admin Live TV access is blocked");
+            // Fail closed: invalid tuner definitions mean nobody (except admins / API keys) gets a tuner.
+            _logger.LogError(ex, "LiveTvAccess: invalid tuner configuration; all non-admin Live TV access is blocked");
             return (new TunerCatalog([]), new UserTunerMap([], []));
         }
+
+        // Users are matched by id only (resolved from names when the config was saved). Bad entries are
+        // skipped one by one and never affect other users.
+        var entries = new List<UserTunerEntry?>();
+        foreach (var e in config.Users ?? [])
+        {
+            if (e is not null && e.UserId != Guid.Empty && _userManager.GetUserById(e.UserId) is null)
+            {
+                _logger.LogWarning("LiveTvAccess: configured user id {UserId} ('{UserName}') no longer exists; skipped", e.UserId, e.UserName);
+                continue;
+            }
+
+            entries.Add(e is null ? null : new UserTunerEntry(e.UserId, e.TunerKey, e.UserName));
+        }
+
+        var map = UserTunerMap.FromEntries(catalog.Keys, entries, w => _logger.LogWarning("LiveTvAccess: {Warning}", w));
+        _logger.LogInformation(
+            "LiveTvAccess: config loaded, tuners [{Tuners}], {Count} user assignment(s)",
+            string.Join(", ", catalog.Keys),
+            map.AssignedUserCount);
+        return (catalog, map);
     }
 }

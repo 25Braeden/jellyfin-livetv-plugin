@@ -78,7 +78,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task GM8_DuplicateUserEntry_DoesNotWipeOtherUsers()
     {
         var w = new World();
@@ -89,7 +88,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG9_NullUserEntry_DoesNotThrow_AndOthersKeepAccess()
     {
         var w = new World();
@@ -102,7 +100,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG6_GM8_UsernameReuse_DoesNotTransferTuner()
     {
         var w = new World();

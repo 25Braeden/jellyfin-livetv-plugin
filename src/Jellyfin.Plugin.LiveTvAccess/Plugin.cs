@@ -2,6 +2,8 @@ using System;
 using Jellyfin.Plugin.LiveTvAccess.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 using Microsoft.Extensions.Logging;
 
@@ -12,6 +14,9 @@ namespace Jellyfin.Plugin.LiveTvAccess;
 /// </summary>
 public class Plugin : BasePlugin<PluginConfiguration>
 {
+    private readonly ILogger<Plugin> _logger;
+    private readonly IUserManager _userManager;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="Plugin"/> class.
     /// Created by Jellyfin through DI (Emby.Server.Implementations/Plugins/PluginManager.cs:554).
@@ -19,9 +24,12 @@ public class Plugin : BasePlugin<PluginConfiguration>
     /// <param name="applicationPaths">Instance of the <see cref="IApplicationPaths"/> interface.</param>
     /// <param name="xmlSerializer">Instance of the <see cref="IXmlSerializer"/> interface.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{Plugin}"/> interface.</param>
-    public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer, ILogger<Plugin> logger)
+    /// <param name="userManager">Instance of the <see cref="IUserManager"/> interface.</param>
+    public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer, ILogger<Plugin> logger, IUserManager userManager)
         : base(applicationPaths, xmlSerializer)
     {
+        _logger = logger;
+        _userManager = userManager;
         Instance = this;
         logger.LogInformation("LiveTvAccess plugin {Version} loaded", Version);
     }
@@ -39,4 +47,58 @@ public class Plugin : BasePlugin<PluginConfiguration>
     /// Gets the current plugin instance.
     /// </summary>
     public static Plugin? Instance { get; private set; }
+
+    /// <summary>
+    /// Saves a new configuration (Jellyfin's plugin config API calls this). Usernames are resolved to user ids
+    /// here, once, so later renames can't move a tuner to another account; access is granted by id only.
+    /// </summary>
+    /// <param name="configuration">The new configuration.</param>
+    public override void UpdateConfiguration(BasePluginConfiguration configuration)
+    {
+        if (configuration is PluginConfiguration config)
+        {
+            ResolveUserIds(config);
+        }
+
+        base.UpdateConfiguration(configuration);
+    }
+
+    private void ResolveUserIds(PluginConfiguration config)
+    {
+        config.Users ??= [];
+        config.Tuners ??= [];
+        foreach (var entry in config.Users)
+        {
+            if (entry is null)
+            {
+                continue;
+            }
+
+            if (entry.UserId != Guid.Empty)
+            {
+                // Id given: it wins. Refresh the display name if the user still exists.
+                var byId = _userManager.GetUserById(entry.UserId);
+                if (byId is null)
+                {
+                    _logger.LogWarning("LiveTvAccess: configured user id {UserId} does not exist", entry.UserId);
+                }
+                else
+                {
+                    entry.UserName = byId.Username;
+                }
+
+                continue;
+            }
+
+            var byName = string.IsNullOrWhiteSpace(entry.UserName) ? null : _userManager.GetUserByName(entry.UserName);
+            if (byName is null)
+            {
+                _logger.LogWarning("LiveTvAccess: configured user '{UserName}' does not exist; entry kept without an id (no access)", entry.UserName);
+                continue;
+            }
+
+            entry.UserId = byName.Id;
+            entry.UserName = byName.Username;
+        }
+    }
 }

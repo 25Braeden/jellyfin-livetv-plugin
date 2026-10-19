@@ -274,3 +274,15 @@ API-key path, which takes the same branch.
 - More version-fragile details: argument names `itemId` / `channelId` / `programId` / `liveStreamId` /
   `openToken`; request body property names `ItemId` / `LiveStreamId` / `OpenToken` (types in `Jellyfin.Api`);
   `RefreshGuide` task key; `Jellyfin.LiveTv.LiveTvMediaSourceProvider` type name (open-token prefix).
+
+## Gate 3.5 phase 2, fix 1: map users by id (2026-10-19)
+
+- Config entries now carry `UserId`. `Plugin.UpdateConfiguration` (the path Jellyfin's
+  `POST /Plugins/{id}/Configuration` uses) resolves `UserName` to an id once, at save time, and stores it.
+  Access is decided by id only; `GetUserByName` is no longer called at decision time.
+- `UserTunerMap.FromEntries` (Core) skips, with a logged warning, any entry that is null, has no id,
+  names an invalid/unknown tuner key, or points at a deleted user. Duplicates for the same tuner are
+  merged with a warning; conflicting entries for one user deny only that user. Other users are unaffected.
+- **Upgrade note:** a config saved before this change has names but no ids, so those users get no tuner
+  until the config is saved again (fail closed, logged as "has no user id"). No automatic name lookup
+  at load time, by design. After deploying, re-save the plugin config once.

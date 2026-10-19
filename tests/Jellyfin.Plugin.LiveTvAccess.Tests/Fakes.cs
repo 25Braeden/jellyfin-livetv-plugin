@@ -83,7 +83,14 @@ public sealed class World
         pathsFake.Handlers["get_PluginConfigurationsPath"] = _ => dir;
         pathsFake.Handlers["get_PluginsPath"] = _ => dir;
         var (xml, _) = Fake<IXmlSerializer>.Create();
-        Plugin = new Plugin(paths, xml, NullLogger<Plugin>.Instance);
+        var (users, usersFake) = Fake<IUserManager>.Create();
+        UsersFake = usersFake;
+        usersFake.Handlers["GetUserById"] = args => Users.FirstOrDefault(u => u.Id == (Guid)args[0]!);
+        usersFake.Handlers["GetUserByName"] = args =>
+            Users.FirstOrDefault(u => string.Equals(u.Username, (string)args[0]!, StringComparison.OrdinalIgnoreCase));
+        usersFake.Handlers["GetUsers"] = _ => Users.ToList();
+
+        Plugin = new Plugin(paths, xml, NullLogger<Plugin>.Instance, users);
 
         UserA = AddUser("A");
         UserB = AddUser("B");
@@ -108,13 +115,6 @@ public sealed class World
             return item;
         };
         libraryFake.Handlers["GetItemList"] = _ => (IReadOnlyList<BaseItem>)Items.Values.ToList();
-
-        var (users, usersFake) = Fake<IUserManager>.Create();
-        UsersFake = usersFake;
-        usersFake.Handlers["GetUserById"] = args => Users.FirstOrDefault(u => u.Id == (Guid)args[0]!);
-        usersFake.Handlers["GetUserByName"] = args =>
-            Users.FirstOrDefault(u => string.Equals(u.Username, (string)args[0]!, StringComparison.OrdinalIgnoreCase));
-        usersFake.Handlers["GetUsers"] = _ => Users.ToList();
 
         var (mediaSources, msFake) = Fake<IMediaSourceManager>.Create();
         MediaSourcesFake = msFake;
