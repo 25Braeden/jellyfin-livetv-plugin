@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -48,6 +49,7 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
     private int _ready;
     private int _passCount;
     private int _disposed;
+    private string? _lastForeignReport;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TagSyncService"/> class.
@@ -199,7 +201,24 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
             {
                 try
                 {
-                    await PassAsync(users, channels, ct).ConfigureAwait(false);
+                    if (!await PassAsync(users, channels, ct).ConfigureAwait(false))
+                    {
+                        // The config changed mid-pass; its results came from an old snapshot. Redo the work with the
+                        // new one right away (not a failure: no backoff, and not counted towards "ready").
+                        _logger.LogInformation("LiveTvAccess: sync pass superseded by a configuration change; restarting");
+                        if (users)
+                        {
+                            Interlocked.Exchange(ref _usersDirty, 1);
+                        }
+
+                        if (channels)
+                        {
+                            Interlocked.Exchange(ref _channelsDirty, 1);
+                        }
+
+                        continue;
+                    }
+
                     Interlocked.Increment(ref _passCount);
                     retryDelay = InitialRetryDelay;
                     if (channels && users && Interlocked.Exchange(ref _ready, 1) == 0)
@@ -258,12 +277,21 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
         }
     }
 
-    private async Task PassAsync(bool users, bool channels, CancellationToken ct)
+    /// <returns><c>false</c> if the pass was superseded by a configuration change.</returns>
+    private async Task<bool> PassAsync(bool users, bool channels, CancellationToken ct)
     {
         var started = Stopwatch.GetTimestamp();
-        var updatedUsers = users ? await SyncUsersAsync(ct).ConfigureAwait(false) : 0;
+
+        // One snapshot for the whole pass; if the config changes mid-pass the pass is abandoned and redone.
+        var pass = new PassContext(_access.Snapshot);
+        var updatedUsers = users ? await SyncUsersAsync(pass, ct).ConfigureAwait(false) : 0;
         var usersDone = Stopwatch.GetTimestamp();
-        var (pages, retagged, midPassUsers) = channels ? await SyncChannelsAsync(ct).ConfigureAwait(false) : (0, 0, 0);
+        var (pages, retagged, midPassUsers) = channels ? await SyncChannelsAsync(pass, ct).ConfigureAwait(false) : (0, 0, 0);
+        if (IsSuperseded(pass))
+        {
+            return false;
+        }
+
         _logger.LogInformation(
             "LiveTvAccess: sync pass: {Channels} channel(s) retagged in {Pages} page(s), {Users} user(s) updated; took {TotalMs} ms (users {UsersMs} ms, channels {ChannelsMs} ms)",
             retagged,
@@ -272,11 +300,37 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
             (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             (long)Stopwatch.GetElapsedTime(started, usersDone).TotalMilliseconds,
             (long)Stopwatch.GetElapsedTime(usersDone).TotalMilliseconds);
+        Report(pass);
+        return true;
     }
 
-    private async Task<(int Pages, int Retagged, int Users)> SyncChannelsAsync(CancellationToken ct)
+    private bool IsSuperseded(PassContext pass) => _access.Version != pass.Snapshot.Version;
+
+    private void Report(PassContext pass)
     {
-        var catalog = _access.Catalog;
+        if (pass.ClaimedInUse.Count > 0)
+        {
+            _logger.LogWarning(
+                "LiveTvAccess: tag(s) the plugin just started managing were already in use: {Tags}. They are now managed by the plugin (expected once after upgrading from a version without tag history; otherwise check the tuner keys)",
+                Describe(pass.ClaimedInUse));
+        }
+
+        // Foreign "livetv-*" tags are left alone. Report them when the set changes, not on every pass.
+        var foreign = pass.Foreign.Count == 0 ? null : Describe(pass.Foreign);
+        if (foreign is not null && !string.Equals(foreign, _lastForeignReport, StringComparison.Ordinal))
+        {
+            _logger.LogWarning("LiveTvAccess: found livetv-* tags the plugin doesn't own; left untouched: {Tags}", foreign);
+        }
+
+        _lastForeignReport = foreign;
+    }
+
+    private static string Describe(SortedDictionary<string, (int Users, int Channels)> counts)
+        => string.Join(", ", counts.Select(c => $"{c.Key} (users {c.Value.Users}, channels {c.Value.Channels})"));
+
+    private async Task<(int Pages, int Retagged, int Users)> SyncChannelsAsync(PassContext pass, CancellationToken ct)
+    {
+        var snapshot = pass.Snapshot;
 
         // Stable paging: fetch the channel ids once, then load and process them a page at a time.
         var ids = _libraryManager.GetItemIds(new InternalItemsQuery
@@ -290,6 +344,11 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
         for (var start = 0; start < ids.Count; start += PageSize)
         {
             ct.ThrowIfCancellationRequested();
+            if (IsSuperseded(pass))
+            {
+                break;
+            }
+
             var page = ids.Skip(start).Take(PageSize).ToArray();
             var items = _libraryManager.GetItemList(new InternalItemsQuery
             {
@@ -299,9 +358,11 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
 
             foreach (var channel in items.OfType<LiveTvChannel>())
             {
-                var key = catalog.ResolveChannel(channel.ExternalId);
+                var key = snapshot.Catalog.ResolveChannel(channel.ExternalId);
                 var tag = key is null ? TunerTags.Unassigned : TunerTags.ForTuner(key);
-                var tags = UserTunerMap.MergeTags(channel.Tags, [tag]).ToArray();
+                pass.NoteClaimedInUse(channel.Tags, isUser: false);
+                var tags = TagOwnership.Merge(channel.Tags, snapshot.OwnedTags, [tag], out var foreign).ToArray();
+                pass.NoteForeign(foreign, isUser: false);
                 if (tags.SequenceEqual(channel.Tags, StringComparer.OrdinalIgnoreCase))
                 {
                     continue;
@@ -329,25 +390,27 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
             // A user change that arrived mid-pass is applied now, not after the remaining pages.
             if (Interlocked.Exchange(ref _usersDirty, 0) == 1)
             {
-                users += await SyncUsersAsync(ct).ConfigureAwait(false);
+                users += await SyncUsersAsync(pass, ct).ConfigureAwait(false);
             }
         }
 
         return (pages, retagged, users);
     }
 
-    private async Task<int> SyncUsersAsync(CancellationToken ct)
+    private async Task<int> SyncUsersAsync(PassContext pass, CancellationToken ct)
     {
-        var map = _access.Map;
+        var snapshot = pass.Snapshot;
         var changed = 0;
         foreach (var user in _userManager.GetUsers().ToList())
         {
             ct.ThrowIfCancellationRequested();
 
             // Admins are never restricted: strip our tags, keep any the admin set themselves.
-            var managed = user.HasPermission(PermissionKind.IsAdministrator) ? [] : map.GetBlockedTags(user.Id);
+            var desired = user.HasPermission(PermissionKind.IsAdministrator) ? [] : snapshot.Map.GetBlockedTags(user.Id);
             var current = user.GetPreference(PreferenceKind.BlockedTags);
-            var blocked = UserTunerMap.MergeTags(current, managed).ToArray();
+            pass.NoteClaimedInUse(current, isUser: true);
+            var blocked = TagOwnership.Merge(current, snapshot.OwnedTags, desired, out var foreign).ToArray();
+            pass.NoteForeign(foreign, isUser: true);
             if (blocked.SequenceEqual(current, StringComparer.OrdinalIgnoreCase))
             {
                 continue;
@@ -361,5 +424,36 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
         }
 
         return changed;
+    }
+
+    /// <summary>
+    /// Per-pass state: the snapshot it uses and what it found.
+    /// </summary>
+    private sealed class PassContext
+    {
+        public PassContext(AccessSnapshot snapshot)
+        {
+            Snapshot = snapshot;
+        }
+
+        public AccessSnapshot Snapshot { get; }
+
+        public SortedDictionary<string, (int Users, int Channels)> Foreign { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public SortedDictionary<string, (int Users, int Channels)> ClaimedInUse { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public void NoteForeign(IEnumerable<string> tags, bool isUser) => Count(Foreign, tags, isUser);
+
+        public void NoteClaimedInUse(IEnumerable<string> existing, bool isUser)
+            => Count(ClaimedInUse, existing.Where(Snapshot.NewlyClaimedTags.Contains), isUser);
+
+        private static void Count(SortedDictionary<string, (int Users, int Channels)> counts, IEnumerable<string> tags, bool isUser)
+        {
+            foreach (var tag in tags)
+            {
+                var (u, c) = counts.GetValueOrDefault(tag);
+                counts[tag] = isUser ? (u + 1, c) : (u, c + 1);
+            }
+        }
     }
 }

@@ -31,7 +31,8 @@ public class AccessService
     private readonly IConfigurationManager _configurationManager;
     private readonly ILogger<AccessService> _logger;
     private readonly object _lock = new();
-    private (TunerCatalog Catalog, UserTunerMap Map)? _state;
+    private AccessSnapshot? _snapshot;
+    private long _version;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AccessService"/> class.
@@ -56,23 +57,42 @@ public class AccessService
     }
 
     /// <summary>
-    /// Gets the tuner catalog from the current configuration.
+    /// Gets the current immutable snapshot of the configuration. Take it once per decision or sync pass.
     /// </summary>
-    public TunerCatalog Catalog => GetState().Catalog;
+    public AccessSnapshot Snapshot
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _snapshot ??= Build(Plugin.Instance?.Configuration ?? new PluginConfiguration(), _version);
+            }
+        }
+    }
 
     /// <summary>
-    /// Gets the user-to-tuner map from the current configuration.
+    /// Gets the current configuration version (increments on every invalidation).
     /// </summary>
-    public UserTunerMap Map => GetState().Map;
+    public long Version
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _version;
+            }
+        }
+    }
 
     /// <summary>
-    /// Drops the cached map so the next call rebuilds it (on config change, user added/renamed).
+    /// Drops the cached snapshot so the next read rebuilds it (config change, user deleted).
     /// </summary>
     public void Invalidate()
     {
         lock (_lock)
         {
-            _state = null;
+            _version++;
+            _snapshot = null;
         }
     }
 
@@ -100,31 +120,33 @@ public class AccessService
     /// <summary>
     /// Gets the tuner a library item belongs to, if it is a Live TV channel or program.
     /// </summary>
+    /// <param name="snapshot">The snapshot this decision uses.</param>
     /// <param name="itemId">The item id.</param>
     /// <param name="isLiveTv"><c>true</c> if the item is a Live TV channel or program.</param>
     /// <returns>The tuner key, or <c>null</c> if not Live TV or unresolvable.</returns>
-    public string? GetItemTuner(Guid itemId, out bool isLiveTv)
+    public string? GetItemTuner(AccessSnapshot snapshot, Guid itemId, out bool isLiveTv)
     {
         var item = itemId == Guid.Empty ? null : _libraryManager.GetItemById(itemId);
         if (item is LiveTvProgram program)
         {
             isLiveTv = true;
             return (_libraryManager.GetItemById(program.ChannelId) as LiveTvChannel) is { } parent
-                ? Catalog.ResolveChannel(parent.ExternalId)
+                ? snapshot.Catalog.ResolveChannel(parent.ExternalId)
                 : null;
         }
 
         isLiveTv = item is LiveTvChannel;
-        return item is LiveTvChannel channel ? Catalog.ResolveChannel(channel.ExternalId) : null;
+        return item is LiveTvChannel channel ? snapshot.Catalog.ResolveChannel(channel.ExternalId) : null;
     }
 
     /// <summary>
     /// Gets the tuner an open live stream is using.
     /// </summary>
+    /// <param name="snapshot">The snapshot this decision uses.</param>
     /// <param name="liveStreamId">The live stream id.</param>
     /// <param name="isLiveTv"><c>true</c> if the id belongs to the Live TV provider.</param>
     /// <returns>The tuner key, or <c>null</c> if not Live TV, not open, or unresolvable.</returns>
-    public string? GetLiveStreamTuner(string liveStreamId, out bool isLiveTv)
+    public string? GetLiveStreamTuner(AccessSnapshot snapshot, string liveStreamId, out bool isLiveTv)
     {
         isLiveTv = liveStreamId.StartsWith(JellyfinIds.LiveTvProviderPrefix + "_", StringComparison.OrdinalIgnoreCase);
         if (!isLiveTv)
@@ -140,31 +162,17 @@ public class AccessService
 
         var url = _configurationManager.GetConfiguration<LiveTvOptions>("livetv").TunerHosts
             .FirstOrDefault(h => string.Equals(h.Id, tunerHostId, StringComparison.OrdinalIgnoreCase))?.Url;
-        return Catalog.ResolveUrl(url);
+        return snapshot.Catalog.ResolveUrl(url);
     }
 
-    private (TunerCatalog Catalog, UserTunerMap Map) GetState()
+    private AccessSnapshot Build(PluginConfiguration config, long version)
     {
-        lock (_lock)
-        {
-            return _state ??= Build(Plugin.Instance?.Configuration ?? new PluginConfiguration());
-        }
-    }
+        void Warn(string message) => _logger.LogWarning("LiveTvAccess: {Warning}", message);
 
-    private (TunerCatalog Catalog, UserTunerMap Map) Build(PluginConfiguration config)
-    {
-        TunerCatalog catalog;
-        try
-        {
-            var tuners = (config.Tuners ?? []).Where(t => t is not null);
-            catalog = new TunerCatalog(tuners.Select(t => new KeyValuePair<string, string>(t.Key, t.Url)));
-        }
-        catch (ArgumentException ex)
-        {
-            // Fail closed: invalid tuner definitions mean nobody (except admins / API keys) gets a tuner.
-            _logger.LogError(ex, "LiveTvAccess: invalid tuner configuration; all non-admin Live TV access is blocked");
-            return (new TunerCatalog([]), new UserTunerMap([], []));
-        }
+        // Bad tuner entries (invalid or reserved key, missing URL, duplicates) are skipped one by one.
+        var catalog = TunerCatalog.FromEntries(
+            (config.Tuners ?? []).Select(t => t is null ? null : new TunerEntry(t.Key, t.Url)),
+            Warn);
 
         // Users are matched by id only (resolved from names when the config was saved). Bad entries are
         // skipped one by one and never affect other users.
@@ -180,11 +188,27 @@ public class AccessService
             entries.Add(e is null ? null : new UserTunerEntry(e.UserId, e.TunerKey, e.UserName));
         }
 
-        var map = UserTunerMap.FromEntries(catalog.Keys, entries, w => _logger.LogWarning("LiveTvAccess: {Warning}", w));
+        var map = UserTunerMap.FromEntries(catalog.Keys, entries, Warn);
+
+        // Tag ownership: configured tuners + "unassigned" + every tag applied before (history).
+        var history = (config.OwnedTagHistory ?? []).Where(TunerTags.IsManaged).ToArray();
+        var owned = TagOwnership.Owned(catalog.Keys, history);
+        var current = catalog.Keys.Select(TunerTags.ForTuner).Append(TunerTags.Unassigned);
+        var newlyClaimed = current.Where(tag => !history.Contains(tag, StringComparer.OrdinalIgnoreCase))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (newlyClaimed.Count > 0)
+        {
+            // Remember them (so a later-removed tuner's tag is still cleaned up). SaveConfiguration doesn't raise
+            // ConfigurationChanged, so this can't trigger another sync.
+            config.OwnedTagHistory = [.. history, .. newlyClaimed];
+            Plugin.Instance?.SaveConfiguration();
+        }
+
         _logger.LogInformation(
-            "LiveTvAccess: config loaded, tuners [{Tuners}], {Count} user assignment(s)",
+            "LiveTvAccess: config loaded (version {Version}), tuners [{Tuners}], {Count} user assignment(s)",
+            version,
             string.Join(", ", catalog.Keys),
             map.AssignedUserCount);
-        return (catalog, map);
+        return new AccessSnapshot(catalog, map, owned, newlyClaimed, version);
     }
 }

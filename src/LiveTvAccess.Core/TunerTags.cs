@@ -43,7 +43,8 @@ public static class TunerTags
     /// </summary>
     /// <param name="tunerKey">The tuner key.</param>
     /// <returns>The normalized key.</returns>
-    /// <exception cref="ArgumentException">If the key is empty or contains characters other than a-z, 0-9 and '-'.</exception>
+    /// <exception cref="ArgumentException">If the key is empty, contains characters other than a-z, 0-9 and '-',
+    /// or is the reserved key "unassigned" (its tag marks channels that match no tuner).</exception>
     public static string NormalizeKey(string tunerKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tunerKey);
@@ -55,6 +56,11 @@ public static class TunerTags
             {
                 throw new ArgumentException($"Invalid tuner key '{tunerKey}': use a-z, 0-9 and '-'.", nameof(tunerKey));
             }
+        }
+
+        if (Prefix + key == Unassigned)
+        {
+            throw new ArgumentException($"Tuner key '{tunerKey}' is reserved.", nameof(tunerKey));
         }
 
         return key;

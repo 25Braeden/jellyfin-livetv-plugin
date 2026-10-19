@@ -65,13 +65,15 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         // Anonymous requests: Jellyfin's own authorization decides (streaming endpoints require auth).
         var started = Stopwatch.GetTimestamp();
         var caller = _access.GetCaller(context.HttpContext.User);
-        if (caller is { } c && !c.IsAdministrator && !c.IsApiKey)
+        if (caller is { } c && !AccessPolicy.IsExempt(c))
         {
+            // One snapshot for the whole decision: a concurrent config change can't mix catalog and map.
+            var snapshot = _access.Snapshot;
             var targets = 0;
             foreach (var (kind, value) in GetTargets(context.ActionArguments))
             {
                 targets++;
-                var (decision, isLiveTv) = Check(c, kind, value);
+                var (decision, isLiveTv) = Check(c, snapshot, kind, value);
                 if (!isLiveTv || decision == AccessDecision.Allow)
                 {
                     continue;
@@ -112,7 +114,7 @@ public class LiveTvAccessFilter : IAsyncActionFilter
 
         // Jellyfin publishes no event for user policy edits (UserManager.UpdatePolicyAsync), so a successful
         // admin / API-key write to /Users/* (policy, user update) requests a users pass instead.
-        if (caller is { } admin && (admin.IsAdministrator || admin.IsApiKey) && IsUserWrite(context) && Succeeded(executed))
+        if (caller is { } admin && AccessPolicy.IsExempt(admin) && IsUserWrite(context) && Succeeded(executed))
         {
             _sync.MarkUsersDirty("user write " + context.ActionDescriptor.AttributeRouteInfo?.Template);
         }
@@ -222,27 +224,27 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         ContentType = "text/plain; charset=utf-8",
     };
 
-    private (AccessDecision Decision, bool IsLiveTv) Check(Caller caller, TargetKind kind, string value)
+    private (AccessDecision Decision, bool IsLiveTv) Check(Caller caller, AccessSnapshot snapshot, TargetKind kind, string value)
     {
         string? tuner;
         bool isLiveTv;
         switch (kind)
         {
             case TargetKind.Item:
-                tuner = _access.GetItemTuner(Guid.ParseExact(value, "N"), out isLiveTv);
+                tuner = _access.GetItemTuner(snapshot, Guid.ParseExact(value, "N"), out isLiveTv);
                 break;
             case TargetKind.LiveStream:
-                tuner = _access.GetLiveStreamTuner(value, out isLiveTv);
+                tuner = _access.GetLiveStreamTuner(snapshot, value, out isLiveTv);
                 break;
             default:
                 // Only Live TV provider tokens can reach a tuner (MediaSourceManager.cs:886-899 dispatches
                 // by prefix). A Live TV token we cannot parse, or that names a non-channel, is denied.
                 tuner = JellyfinIds.TryParseLiveTvOpenToken(value, out isLiveTv, out var itemId)
-                    ? _access.GetItemTuner(itemId, out _)
+                    ? _access.GetItemTuner(snapshot, itemId, out _)
                     : null;
                 break;
         }
 
-        return (AccessPolicy.Decide(caller, _access.Map, tuner, _sync.IsReady), isLiveTv);
+        return (AccessPolicy.Decide(caller, snapshot.Map, tuner, _sync.IsReady), isLiveTv);
     }
 }

@@ -61,4 +61,62 @@ public sealed class TunerCatalog
     {
         return _tuners.FirstOrDefault(t => string.Equals(t.Url, tunerUrl, StringComparison.Ordinal)).Key;
     }
+
+    /// <summary>
+    /// Builds a catalog from configured tuners, skipping (with a warning) any entry that is null, has an invalid or
+    /// reserved key, or has no URL. Keys or URLs that appear more than once are ambiguous: every entry involved is
+    /// skipped. A bad entry never affects the other tuners.
+    /// </summary>
+    /// <param name="entries">The configured tuners (may contain nulls).</param>
+    /// <param name="warn">Receives one message per skipped entry.</param>
+    /// <returns>The catalog.</returns>
+    public static TunerCatalog FromEntries(IEnumerable<TunerEntry?> entries, Action<string> warn)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ArgumentNullException.ThrowIfNull(warn);
+
+        var valid = new List<(string Key, string Url, int Index)>();
+        var index = 0;
+        foreach (var entry in entries)
+        {
+            index++;
+            if (entry is null)
+            {
+                warn($"tuner entry #{index} is empty; skipped");
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(entry.Url))
+            {
+                warn($"tuner entry #{index} ('{entry.Key}') has no URL; skipped");
+                continue;
+            }
+
+            try
+            {
+                valid.Add((TunerTags.NormalizeKey(entry.Key!), entry.Url, index));
+            }
+            catch (ArgumentException ex)
+            {
+                warn($"tuner entry #{index}: {ex.Message.Split(" (Parameter", 2)[0]} Skipped");
+            }
+        }
+
+        // Ambiguous: a key or URL used by more than one entry. Skip every entry involved.
+        var dupKeys = valid.GroupBy(t => t.Key).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
+        var dupUrls = valid.GroupBy(t => t.Url, StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
+        var kept = new List<KeyValuePair<string, string>>();
+        foreach (var (key, url, i) in valid)
+        {
+            if (dupKeys.Contains(key) || dupUrls.Contains(url))
+            {
+                warn($"tuner entry #{i} ('{key}', {url}) duplicates another entry's key or URL; skipped");
+                continue;
+            }
+
+            kept.Add(new KeyValuePair<string, string>(key, url));
+        }
+
+        return new TunerCatalog(kept);
+    }
 }

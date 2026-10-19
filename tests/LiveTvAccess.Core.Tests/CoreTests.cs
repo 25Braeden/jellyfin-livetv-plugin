@@ -65,14 +65,6 @@ public class CoreTests
             [new KeyValuePair<Guid, string>(UserA, "tuner1"), new KeyValuePair<Guid, string>(UserA, "tuner1")]));
     }
 
-    [Fact]
-    public void MergeTags_KeepsUnmanagedReplacesManaged()
-    {
-        Assert.Equal(
-            ["kids", "livetv-tuner2"],
-            UserTunerMap.MergeTags(["kids", "livetv-tuner1", "LIVETV-old"], ["livetv-tuner2"]));
-    }
-
     // Known values observed on the local Jellyfin 10.11.11 server.
     private const string Tuner1Url = "/tuners/tuner1.m3u";
     private const string Tuner2Url = "/tuners/tuner2.m3u";

@@ -110,7 +110,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG5_ConfigSwapDuringDecision_NeverAllowsForbiddenChannel()
     {
         // Config X: tuner1=/t1, tuner2=/t2, A->tuner1. Config Y: keys swapped (tuner1=/t2, tuner2=/t1), A->tuner2.
@@ -155,11 +154,10 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG16_ApiKeyPrincipalWithUserId_FilterAgreesWithCorePolicy()
     {
         var w = new World();
-        var policy = AccessPolicy.Decide(new Caller(w.UserA.Id, true, false), w.Access.Map, "tuner2");
+        var policy = AccessPolicy.Decide(new Caller(w.UserA.Id, true, false), w.Access.Snapshot.Map, "tuner2");
         Assert.NotEqual(AccessDecision.Allow, policy);
         Assert.Equal(403, await w.RunFilter(World.Principal(w.UserA.Id, isApiKey: true), Item(w.Tuner2Channel.Id)));
     }
@@ -178,18 +176,20 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public void CG14a_UnassignedIsRejectedAsTunerKey()
     {
         Assert.ThrowsAny<ArgumentException>(() => TunerTags.NormalizeKey("unassigned"));
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public void CG14b_SyncKeepsLivetvTagsThePluginDoesNotOwn()
     {
-        var merged = UserTunerMap.MergeTags(["livetv-sports", "kids"], ["livetv-tuner2"]);
+        // Phase 1 used UserTunerMap.MergeTags, which treated every "livetv-*" tag as the plugin's. Fix 3 replaces it
+        // with TagOwnership (owned = configured tuners + "unassigned" + history); same scenario, new API.
+        var owned = TagOwnership.Owned(["tuner1", "tuner2"], []);
+        var merged = TagOwnership.Merge(["livetv-sports", "kids"], owned, ["livetv-tuner2"], out var foreign);
         Assert.Contains("livetv-sports", merged);
+        Assert.Equal(["livetv-sports"], foreign);
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Jellyfin.Plugin.LiveTvAccess.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
@@ -58,6 +59,12 @@ public class Plugin : BasePlugin<PluginConfiguration>
         if (configuration is PluginConfiguration config)
         {
             ResolveUserIds(config);
+
+            // The owned-tag history is the plugin's own bookkeeping: keep it even if the saved config omits it.
+            config.OwnedTagHistory = (Configuration?.OwnedTagHistory ?? [])
+                .Concat(config.OwnedTagHistory ?? [])
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         base.UpdateConfiguration(configuration);

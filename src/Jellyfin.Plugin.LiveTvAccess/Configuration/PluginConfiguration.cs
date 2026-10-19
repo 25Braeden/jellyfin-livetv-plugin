@@ -21,4 +21,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the user-to-tuner assignments, by username.
     /// </summary>
     public UserTunerConfig[] Users { get; set; } = Array.Empty<UserTunerConfig>();
+
+    /// <summary>
+    /// Gets or sets every "livetv-*" tag the plugin has applied (maintained by the plugin). Lets it clean up a
+    /// removed tuner's tag while never touching "livetv-*" tags it didn't create. Preserved across config saves.
+    /// </summary>
+    public string[] OwnedTagHistory { get; set; } = Array.Empty<string>();
 }

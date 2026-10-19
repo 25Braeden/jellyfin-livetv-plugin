@@ -9,6 +9,8 @@
 | 2026-10-19 | Gate 3.5 phase 1: review reproductions | 36a259f | 15 KnownIssue tests |
 | 2026-10-19 | Gate 3.5 fix 1: map users by id | ae8c854 | KnownIssue 3/15 pass |
 | 2026-10-19 | Gate 3.5 fix 2: sync worker lifecycle | 8c6e9c8 | KnownIssue 5/15 pass; 45/45 acceptance |
+| 2026-10-19 | Scale test (16,000 channels) | cc13c53 | See below |
+| 2026-10-19 | Gate 3.5 fix 3: snapshots, reserved key, tag ownership, API-key rule | 9032190 | KnownIssue 9/15 pass; 45/45 acceptance |
 
 ## Scale test (16,000 channels), 2026-10-19
 

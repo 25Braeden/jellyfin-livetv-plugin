@@ -8,6 +8,17 @@ namespace LiveTvAccess.Core;
 public static class AccessPolicy
 {
     /// <summary>
+    /// Gets whether a caller is never restricted: administrators, and API keys that carry no user.
+    /// The filter and <see cref="Decide(Caller, UserTunerMap, string?, bool)"/> both use this one rule.
+    /// </summary>
+    /// <param name="caller">The caller.</param>
+    /// <returns><c>true</c> if exempt.</returns>
+    public static bool IsExempt(Caller caller)
+    {
+        return caller.IsAdministrator || (caller.IsApiKey && caller.UserId == Guid.Empty);
+    }
+
+    /// <summary>
     /// Decides whether a caller may use a channel or stream on a given tuner.
     /// </summary>
     /// <param name="caller">The caller.</param>
@@ -29,7 +40,7 @@ public static class AccessPolicy
     {
         ArgumentNullException.ThrowIfNull(map);
 
-        if (caller.IsAdministrator || (caller.IsApiKey && caller.UserId == Guid.Empty))
+        if (IsExempt(caller))
         {
             return AccessDecision.Allow;
         }

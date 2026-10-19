@@ -71,19 +71,6 @@ public sealed class UserTunerMap
     }
 
     /// <summary>
-    /// Merges managed blocked tags into a user's existing blocked tags, keeping tags this plugin doesn't manage.
-    /// </summary>
-    /// <param name="existing">The user's current blocked tags.</param>
-    /// <param name="managed">The managed tags to apply (from <see cref="GetBlockedTags"/>), or empty to remove ours.</param>
-    /// <returns>The new blocked tag list.</returns>
-    public static IReadOnlyList<string> MergeTags(IEnumerable<string> existing, IEnumerable<string> managed)
-    {
-        ArgumentNullException.ThrowIfNull(existing);
-        ArgumentNullException.ThrowIfNull(managed);
-        return existing.Where(t => !TunerTags.IsManaged(t)).Concat(managed).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    }
-
-    /// <summary>
     /// Builds a map from configured entries, skipping (with a warning) any entry that is null, has no user id,
     /// names an invalid or unknown tuner, or conflicts with another entry for the same user. A bad entry never
     /// affects other users.

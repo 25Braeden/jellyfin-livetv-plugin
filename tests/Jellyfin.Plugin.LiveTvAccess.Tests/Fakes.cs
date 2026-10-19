@@ -73,6 +73,20 @@ public class Fake<T> : DispatchProxy
     }
 }
 
+/// <summary>Logger that keeps formatted messages (for asserting on what the plugin reports).</summary>
+public sealed class ListLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+{
+    public System.Collections.Concurrent.ConcurrentQueue<string> Messages { get; } = new();
+
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull => null;
+
+    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+    public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        => Messages.Enqueue($"{logLevel}: {formatter(state, exception)}");
+}
+
 /// <summary>Signals stub for filter tests that don't involve the sync worker.</summary>
 public sealed class ReadySignals : ISyncSignals
 {
@@ -242,10 +256,10 @@ public sealed class World
     }
 
     /// <summary>Creates the real sync worker against this world, with fast timings for tests.</summary>
-    public TagSyncService CreateSync()
+    public TagSyncService CreateSync(Microsoft.Extensions.Logging.ILogger<TagSyncService>? logger = null)
     {
         var (tasks, _) = Fake<ITaskManager>.Create();
-        var sync = new TagSyncService(Access, LibraryManager, UserManager, tasks, NullLogger<TagSyncService>.Instance)
+        var sync = new TagSyncService(Access, LibraryManager, UserManager, tasks, logger ?? NullLogger<TagSyncService>.Instance)
         {
             InitialRetryDelay = TimeSpan.FromMilliseconds(50),
             MaxRetryDelay = TimeSpan.FromMilliseconds(200),

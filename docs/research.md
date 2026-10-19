@@ -357,3 +357,24 @@ the next refresh took 4 s. Gate 3 acceptance then passed 45/45.
    main lever; a few hundred channels per tuner is fast.
 2. Keep the guide provider limited to the channels in use, and run the guide refresh off-peak.
 3. Consider the reverse-proxy layer or an M3U-filtering proxy in front of the provider for curation.
+
+## Gate 3.5 phase 2, fix 3: snapshots, reserved key, tag ownership, API-key rule (2026-10-19)
+
+- **One snapshot per decision and per pass:** `AccessService.Snapshot` is an immutable `AccessSnapshot`
+  (catalog, map, owned tags, newly claimed tags, version), rebuilt only after `Invalidate()`. The filter takes
+  it once per request; a sync pass takes it once and, if the version changes mid-pass, stops between pages and
+  redoes the work with the new snapshot (no backoff, not counted towards "ready"). The CG5 race test (12,976 of
+  20,000 wrong allows before) now has 0.
+- **Reserved key:** `unassigned` (any case) is rejected by `TunerTags.NormalizeKey`. Tuner entries are now
+  built with `TunerCatalog.FromEntries`: a null, keyless, reserved, or URL-less entry is skipped with a warning,
+  and keys or URLs used twice skip every entry involved. Other tuners are unaffected (before, any bad tuner entry
+  blocked everyone).
+- **Tag ownership:** the plugin owns exactly `livetv-{configured key}`, `livetv-unassigned`, and every tag it
+  applied before (`OwnedTagHistory`, kept in the plugin config, merged back in on every config save, saved
+  without raising ConfigurationChanged). `TagOwnership.Merge` replaces owned tags and keeps everything else.
+  Other `livetv-*` tags are left untouched and reported (warning when the set changes). A tag the plugin claims
+  for the first time that was already present is reported once; after upgrading from fix 2 this fires once for
+  the plugin's own earlier tags (seen locally, not repeated after restart).
+- **One API-key rule:** `AccessPolicy.IsExempt` (admins, and API keys without a user) is used by the filter, by
+  `Decide`, and by the admin-write re-sync hook. An API-key principal that carries a user id is treated as that
+  user.
