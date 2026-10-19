@@ -1,0 +1,25 @@
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:10.11.11
+    container_name: jellyfin-dev
+    environment:
+      TZ: America/New_York
+    ports:
+      - "8096:8096/tcp"
+    volumes:
+      - ./local/config:/config
+      - ./local/cache:/cache
+      - ./test-media:/media:ro
+      - ./tuners:/tuners:ro
+    restart: unless-stopped
+
+  # Serves ./test-media over HTTP so the fake M3U tuners have "streams" to point at.
+  fakestreams:
+    image: nginx:alpine
+    container_name: fakestreams
+    volumes:
+      - ./test-media:/usr/share/nginx/html:ro
+      - ./fakestreams/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8081:80/tcp"
+    restart: unless-stopped

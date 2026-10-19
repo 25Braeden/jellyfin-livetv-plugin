@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="movies1" tvg-name="Test Movies" group-title="Movies",Test Movies
+http://fakestreams/clip2.mp4?ch=movies1
+#EXTINF:-1 tvg-id="kids1" tvg-name="Test Kids" group-title="Kids",Test Kids
+http://fakestreams/clip1.mp4?ch=kids1
+#EXTINF:-1 tvg-id="shared1" tvg-name="Shared Channel" group-title="General",Shared Channel
+http://fakestreams/clip2.mp4?ch=shared1

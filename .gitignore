@@ -1,0 +1,23 @@
+# Local Jellyfin state (config, cache, db)
+local/*
+!local/.gitkeep
+
+# Real tuner playlists may contain provider credentials
+tuners/*
+!tuners/tuner1.m3u
+!tuners/tuner2.m3u
+
+# Secrets
+.env
+
+# Test media
+test-media/*
+!test-media/.gitkeep
+
+# .NET build output
+bin/
+obj/
+.DS_Store
+
+# Python bytecode
+__pycache__/
