@@ -16,9 +16,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
         serviceCollection.AddHostedService<StartupLogService>();
+        serviceCollection.AddSingleton<AccessService>();
+        serviceCollection.AddHostedService<TagSyncService>();
 
         // Global MVC action filter. Options configuration is order-independent, so this applies even though
         // Jellyfin's own AddMvc runs later (Jellyfin.Server/Extensions/ApiServiceCollectionExtensions.cs:123).
-        serviceCollection.Configure<MvcOptions>(options => options.Filters.Add<LiveTvRequestLogFilter>());
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.Add<LiveTvAccessFilter>());
     }
 }

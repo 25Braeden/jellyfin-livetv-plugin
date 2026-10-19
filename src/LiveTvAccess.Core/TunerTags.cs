@@ -14,6 +14,11 @@ public static class TunerTags
     public const string Prefix = "livetv-";
 
     /// <summary>
+    /// Tag for channels that match no configured tuner. Blocked for every non-admin user (fail closed).
+    /// </summary>
+    public const string Unassigned = Prefix + "unassigned";
+
+    /// <summary>
     /// Gets the tag for a tuner key.
     /// </summary>
     /// <param name="tunerKey">Short tuner key: lowercase letters, digits and dashes (e.g. "tuner1").</param>

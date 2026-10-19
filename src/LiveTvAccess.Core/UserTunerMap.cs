@@ -54,14 +54,27 @@ public sealed class UserTunerMap
     }
 
     /// <summary>
-    /// Gets the channel tags a user must not see: every tuner's tag except their own.
-    /// A user with no tuner gets every tuner's tag (deny by default).
+    /// Gets the channel tags a user must not see: every tuner's tag except their own, plus
+    /// <see cref="TunerTags.Unassigned"/>. A user with no tuner gets every tuner's tag (deny by default).
     /// </summary>
     /// <param name="userId">The user id.</param>
     /// <returns>The blocked tags.</returns>
     public IReadOnlyList<string> GetBlockedTags(Guid userId)
     {
         var own = GetTuner(userId);
-        return TunerKeys.Where(k => k != own).Select(TunerTags.ForTuner).ToArray();
+        return TunerKeys.Where(k => k != own).Select(TunerTags.ForTuner).Append(TunerTags.Unassigned).ToArray();
+    }
+
+    /// <summary>
+    /// Merges managed blocked tags into a user's existing blocked tags, keeping tags this plugin doesn't manage.
+    /// </summary>
+    /// <param name="existing">The user's current blocked tags.</param>
+    /// <param name="managed">The managed tags to apply (from <see cref="GetBlockedTags"/>), or empty to remove ours.</param>
+    /// <returns>The new blocked tag list.</returns>
+    public static IReadOnlyList<string> MergeTags(IEnumerable<string> existing, IEnumerable<string> managed)
+    {
+        ArgumentNullException.ThrowIfNull(existing);
+        ArgumentNullException.ThrowIfNull(managed);
+        return existing.Where(t => !TunerTags.IsManaged(t)).Concat(managed).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 }

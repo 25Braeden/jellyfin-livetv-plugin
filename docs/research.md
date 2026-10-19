@@ -208,3 +208,69 @@ refresh; TunerCount=1 blocks a second channel; Jellyfin shares the same channel'
 - Sharing against the real production provider (the fake `.ts` provider confirmed one pull).
 - Stale stream after a client crash: how long the slot stays held.
 - Real clients (web, Android TV, iOS) use the same endpoints as the scripts (Gate 5).
+
+## Gate 3: enforcement (2026-10-19)
+
+Acceptance test: `scripts/gate3_test.py` (42/42 pass). Config is set through Jellyfin's plugin
+config API (`POST /Plugins/{id}/Configuration`), the same path a settings page will use:
+
+```json
+{"Tuners": [{"Key": "tuner1", "Url": "/tuners/tuner1.m3u"}, {"Key": "tuner2", "Url": "/tuners/tuner2.m3u"}],
+ "Users":  [{"UserName": "A", "TunerKey": "tuner1"}, {"UserName": "B", "TunerKey": "tuner2"}]}
+```
+
+**Design**
+- Core (`src/LiveTvAccess.Core`): `TunerCatalog` (channel ExternalId / tuner URL -> tuner key),
+  `UserTunerMap` (user -> tuner, blocked tags), `AccessPolicy` (admins and API keys pass; unmapped
+  users get nothing; unknown tuner = deny), `JellyfinIds` (Jellyfin's MD5 ID scheme, open-token
+  parsing), `Redact` (short SHA-256 for logs).
+- `LiveTvAccessFilter` (global MVC action filter) checks every authenticated non-admin request for
+  anything naming Live TV: `itemId` / `channelId` / `programId` arguments, `liveStreamId`, `openToken`,
+  and the same fields in request bodies. Denies with a plain-text 403 before the action runs.
+  Translates `LiveTvConflictException` into a plain-text 409 "tuner busy".
+- `TagSyncService` tags every channel `livetv-{tuner}` (or `livetv-unassigned`) and sets each
+  non-admin user's BlockedTags, at startup, after every `RefreshGuide` task, on plugin config
+  change and on user update. Tags the plugin doesn't manage (no `livetv-` prefix) are kept.
+
+**Third hole found and closed:** streaming endpoints (`/Videos/{itemId}/stream*`, HLS) look the item
+up with no user (`Jellyfin.Api/Helpers/StreamingHelpers.cs:111, 130`). Without a `liveStreamId`, the
+transcoder opens the tuner itself (`MediaBrowser.MediaEncoding/Transcoding/TranscodeManager.cs:662-669`).
+Verified: an API-key request (which the plugin lets through) to `/Videos/{channel}/stream.ts?mediaSourceId=...`
+opened the tuner and streamed. The filter now blocks this for users without that tuner.
+
+| Gate 3 check | Result |
+|---|---|
+| Plugin tags channels and sets blocked tags (A, B, C), no script | pass |
+| Channel list / On Now: A tuner1 only, B tuner2 only, C 403, API key all | pass |
+| PlaybackInfo (POST and GET) on another tuner's channel | 403 "This channel is not available for your account." |
+| C PlaybackInfo + AutoOpen (hole 1) | 403 "Live TV is not available for your account." |
+| A LiveStreams/Open with a tuner-2 token: real, hand-built, query string (hole 2) | 403 |
+| Malformed Live TV open token | 403 (fail closed) |
+| `/Videos/{other tuner}/stream.ts`, `master.m3u8` without a live stream (hole 3) | 403, no upstream request |
+| A streams or closes B's live stream id | 403 |
+| A second channel while A's tuner is busy | 409 "Your tuner is busy with another live stream. Stop it and try again." |
+| A same channel from 2 sessions | allowed, one shared stream |
+| A plays every tuner-1 channel (HLS master, playlist, first segment) | pass |
+| API key: PlaybackInfo / LiveStreams/Open on any tuner | 200 |
+| Stream URL change re-creates a channel; plugin re-tags it after guide refresh | pass |
+| Plugin logs: no full open tokens, short hash only | pass |
+
+**Not tested live:** an interactive admin login (the local admin password is not available to the
+scripts). Admin pass-through is covered by Core unit tests (`AccessPolicy_Decisions`) and by the
+API-key path, which takes the same branch.
+
+**Known gaps / risks**
+- Between a guide refresh creating channels and the plugin re-tagging them (seconds), new channels
+  are briefly visible to all users in channel lists. Playback is still enforced, because the filter
+  resolves the tuner from the channel's ExternalId, not from tags.
+- Empty or invalid plugin config = fail closed: all non-admin Live TV access is blocked. On first
+  install in production, configure the plugin before users notice.
+- `GET /LiveTv/LiveStreamFiles/{uniqueId}/stream.ts` (`LiveTvController.cs:1180-1195`) requires no login
+  (an anonymous request returns 404, not 401). It serves the shared `.ts` buffer to anyone holding the
+  random stream id, which only the opener receives in its media source. The filter skips anonymous
+  requests, so it doesn't cover this. Consider blocking it at Caddy for non-local clients.
+- The tuner-busy check is still Jellyfin's per-tuner limit (one user per tuner). Per-user limits
+  across tuners are Gate 4.
+- More version-fragile details: argument names `itemId` / `channelId` / `programId` / `liveStreamId` /
+  `openToken`; request body property names `ItemId` / `LiveStreamId` / `OpenToken` (types in `Jellyfin.Api`);
+  `RefreshGuide` task key; `Jellyfin.LiveTv.LiveTvMediaSourceProvider` type name (open-token prefix).
