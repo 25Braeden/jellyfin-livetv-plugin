@@ -168,8 +168,10 @@ public class LiveTvAccessFilter : IAsyncActionFilter
                 return Deny(context, caller, decision, "target", value.Guid is null ? Redact.ShortHash(value.Text) : value.Text, started, values.Count);
             }
 
-            // A resolved Live TV target, or a resolved stream/token of another provider.
-            resolvedTarget |= target.Kind == TargetKind.LiveTv || (target.Kind == TargetKind.NotLiveTv && value.Guid is null);
+            // A resolved Live TV target, or a resolved stream/token of another provider. A play session id isn't the
+            // stream or token these actions open or close, so it never counts.
+            resolvedTarget |= value.Hint != ValueHint.PlaySessionId
+                && (target.Kind == TargetKind.LiveTv || (target.Kind == TargetKind.NotLiveTv && value.Guid is null));
             namesLiveTvItem |= target.Kind == TargetKind.LiveTv;
         }
 

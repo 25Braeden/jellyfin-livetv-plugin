@@ -49,3 +49,27 @@ public class ReviewFinalConfigTests
         Assert.Contains(w.Plugin.Configuration.Users, u => u.UserId == w.UserB.Id && u.TunerKey == "tuner2");
     }
 }
+
+/// <summary>Final review Q6: a play session id isn't the target LiveStreams/Open or Close must name.</summary>
+public class ReviewFinalRequireTargetTests
+{
+    [Theory]
+    [InlineData("x")]
+    [InlineData("0123456789abcdef0123456789abcdef")]
+    public async Task OpenWithOnlyAPlaySessionId_IsDenied(string playSessionId)
+    {
+        var w = new World();
+        var args = new System.Collections.Generic.Dictionary<string, object?> { ["playSessionId"] = playSessionId };
+        var r = await w.RunAt(World.Principal(w.UserA.Id), args, "MediaInfo", "OpenLiveStream");
+        Assert.Equal(403, r.Status);
+        Assert.Equal(global::LiveTvAccess.Core.AccessPolicy.DeniedMessage, r.Body);
+    }
+
+    [Fact]
+    public async Task OpenWithOwnTokenAndPlaySession_IsAllowed()
+    {
+        var w = new World();
+        var args = new System.Collections.Generic.Dictionary<string, object?> { ["openToken"] = w.TokenFor(w.Tuner1Channel), ["playSessionId"] = "x" };
+        Assert.Null((await w.RunAt(World.Principal(w.UserA.Id), args, "MediaInfo", "OpenLiveStream")).Status);
+    }
+}

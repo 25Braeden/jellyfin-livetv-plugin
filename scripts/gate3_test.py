@@ -879,6 +879,10 @@ def main():
     st, body = A21.post("/LiveTv/Programs", {"UserId": a21u, "Limit": 500})
     check("Q1: A POST /LiveTv/Programs {UserId: A} = own guide", st == 200 and tuner2_programmes(st, body) == 0 and len(body.get("Items", [])) > 0, f"HTTP {st}")
 
+    # Q6: a play session id isn't the target LiveStreams/Open must name.
+    st, body = A21.post("/LiveStreams/Open", {}, playSessionId="x")
+    check("Q6: A POST /LiveStreams/Open?playSessionId=x (no token) = 403 from the plugin", st == 403 and text((st, body)) == DENIED, f"HTTP {st}")
+
     # Q5: a dangling name-only entry is dropped at save, so a later self-rename can't claim it.
     C21, c21u, _ = n.login("C", "gate3-C-final")
     try:

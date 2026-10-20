@@ -976,3 +976,11 @@ filter, and this only happens during an admin reconfiguration.
 so nothing is left to resolve later. Entries for existing users still resolve by name at save time (the admin's
 explicit action), and id entries are unchanged. The settings page always sends ids. Tests failed first. Gate 3
 section 21 repeats the exact flow.
+
+### R9. A play session id doesn't satisfy "must name a target" (independent review Q6)
+
+**Confirmed live** (no security impact today). `POST /LiveStreams/Open?playSessionId=x` with no open token got
+through the plugin's must-name-a-target rule (`LiveTvEndpoints.RequireTarget`): Jellyfin answered 400 instead of the
+plugin's 403. That's because a non-GUID play session id that isn't a running job counted as a resolved non-Live-TV
+target. Play-session values no longer count towards that rule. A test failed first; Gate 3 section 21 checks the live
+403.
