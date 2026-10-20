@@ -15,14 +15,12 @@ using Xunit;
 namespace Jellyfin.Plugin.LiveTvAccess.Tests;
 
 /// <summary>
-/// Gate 3.5 phase 1: one test per review finding. Each asserts the SECURE behaviour, so a failing
-/// test means the finding is reproduced. Reproduced findings carry Category=KnownIssue (excluded from
-/// the default run) until phase 2 fixes them. Prefixes: CG = chatgpt-review.txt, GM = gemini-review.txt.
+/// Gate 3.5 phase 1: one test per review finding, asserting the SECURE behaviour (a failing test meant the finding
+/// was reproduced). All 15 reproduced findings were fixed in phase 2 (fixes 1-5) and now run by default.
+/// Prefixes: CG = chatgpt-review.txt, GM = gemini-review.txt.
 /// </summary>
 public class ReviewReproTests
 {
-    private const string KnownIssue = "KnownIssue";
-
     private static Dictionary<string, object?> Item(Guid id) => new() { ["itemId"] = id };
 
     [Fact]
@@ -41,7 +39,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG2_UnrecognizedProviderToken_OnOpen_IsDenied()
     {
         var w = new World();
@@ -50,7 +47,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task GM2_CG3_TimerBodyOutsideJellyfinApi_OtherTunerChannel_IsDenied()
     {
         var w = new World();
@@ -59,7 +55,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task GM5_ItemIdsArray_OtherTunerChannel_IsDenied()
     {
         var w = new World();
@@ -241,7 +236,7 @@ public class ReviewReproTests
         Assert.True(returnedQuickly, "StartAsync blocked on the initial sync");
     }
 
-    // ---- Findings expected NOT to reproduce (no KnownIssue trait; these should pass) ----
+    // ---- Findings that did not reproduce ----
 
     [Fact]
     public async Task GM1_HyphenatedGuidInOpenToken_IsDenied()

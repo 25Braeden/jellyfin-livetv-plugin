@@ -144,6 +144,129 @@ public class AccessService
     }
 
     /// <summary>
+    /// Classifies one identifier found in a request: Live TV channel/program/stream (with its tuner), recording,
+    /// something else (library item, user, non-tuner stream), or unresolved.
+    /// </summary>
+    /// <param name="snapshot">The snapshot this decision uses.</param>
+    /// <param name="value">The identifier.</param>
+    /// <returns>The classification.</returns>
+    public TargetInfo Classify(AccessSnapshot snapshot, Filters.CollectedValue value)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(value);
+
+        try
+        {
+            return ClassifyCore(snapshot, value);
+        }
+#pragma warning disable CA1031 // Any lookup failure means we can't classify: fail closed.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            // Jellyfin's lookups can throw (e.g. the placeholder row 00000000000000000000000000000001 can't be
+            // deserialized). Unclassifiable is denied, whatever kind of argument it came from.
+            _logger.LogDebug(ex, "LiveTvAccess: could not classify a request identifier; denying");
+            return new TargetInfo(TargetKind.Unresolved, null, MustResolve: true);
+        }
+    }
+
+    private TargetInfo ClassifyCore(AccessSnapshot snapshot, Filters.CollectedValue value)
+    {
+        if (value.Guid is { } guid)
+        {
+            if (guid == Guid.Empty)
+            {
+                // Jellyfin uses the empty id for "none" / the user's root folder.
+                return new TargetInfo(TargetKind.NotLiveTv, null, value.IsRouteIdentifier);
+            }
+
+            var item = _libraryManager.GetItemById(guid);
+            if (item is LiveTvChannel or LiveTvProgram)
+            {
+                return new TargetInfo(TargetKind.LiveTv, GetItemTuner(snapshot, guid, out _), value.IsRouteIdentifier);
+            }
+
+            if (item is not null)
+            {
+                return new TargetInfo(IsRecording(item) ? TargetKind.Recording : TargetKind.NotLiveTv, null, value.IsRouteIdentifier);
+            }
+
+            return _userManager.GetUserById(guid) is not null
+                ? new TargetInfo(TargetKind.NotLiveTv, null, value.IsRouteIdentifier)
+                : new TargetInfo(TargetKind.Unresolved, null, value.IsRouteIdentifier);
+        }
+
+        switch (ProviderString.Classify(value.Text, out var tokenItemId))
+        {
+            case ProviderStringKind.LiveTvOpenToken:
+                // A Live TV open token must name a channel we can place on a tuner. (Jellyfin throws on an empty id.)
+                return tokenItemId != Guid.Empty && _libraryManager.GetItemById(tokenItemId) is LiveTvChannel
+                    ? new TargetInfo(TargetKind.LiveTv, GetItemTuner(snapshot, tokenItemId, out _), true)
+                    : new TargetInfo(TargetKind.Unresolved, null, true);
+
+            case ProviderStringKind.LiveTvStreamId:
+            case ProviderStringKind.OtherProvider:
+                var stream = _mediaSourceManager.GetLiveStreamInfo(value.Text.Trim());
+                if (stream is null)
+                {
+                    return new TargetInfo(TargetKind.Unresolved, null, true);
+                }
+
+                if (string.IsNullOrEmpty(stream.TunerHostId))
+                {
+                    // An open stream that isn't on a tuner (another provider). A Live TV stream without a tuner
+                    // is unexpected: fail closed.
+                    return new TargetInfo(
+                        ProviderString.Classify(value.Text, out _) == ProviderStringKind.OtherProvider ? TargetKind.NotLiveTv : TargetKind.Unresolved,
+                        null,
+                        true);
+                }
+
+                return new TargetInfo(TargetKind.LiveTv, TunerOfHost(snapshot, stream.TunerHostId), true);
+
+            default:
+                return new TargetInfo(value.IsRouteIdentifier ? TargetKind.Unresolved : TargetKind.NotLiveTv, null, value.IsRouteIdentifier);
+        }
+    }
+
+    /// <summary>
+    /// Gets whether an item is a Live TV recording: an active one (Video.SourceType is LiveTV,
+    /// MediaBrowser.Controller/Entities/Video.cs:168-177) or a file under a recording folder
+    /// (src/Jellyfin.LiveTv/Recordings/RecordingsManager.cs:106-170).
+    /// </summary>
+    private bool IsRecording(MediaBrowser.Controller.Entities.BaseItem item)
+    {
+        if (item is MediaBrowser.Controller.Entities.Video video && video.SourceType == MediaBrowser.Controller.Entities.SourceType.LiveTV)
+        {
+            return true;
+        }
+
+        if (string.IsNullOrEmpty(item.Path))
+        {
+            return false;
+        }
+
+        var options = _configurationManager.GetConfiguration<LiveTvOptions>("livetv");
+        var roots = new[]
+        {
+            options.RecordingPath,
+            options.MovieRecordingPath,
+            options.SeriesRecordingPath,
+            System.IO.Path.Combine(_configurationManager.CommonApplicationPaths.DataPath, "livetv", "recordings"),
+        };
+        var path = item.Path.Replace('\\', '/');
+        return roots.Any(root => !string.IsNullOrWhiteSpace(root)
+            && path.StartsWith(root.Replace('\\', '/').TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string? TunerOfHost(AccessSnapshot snapshot, string tunerHostId)
+    {
+        var url = _configurationManager.GetConfiguration<LiveTvOptions>("livetv").TunerHosts
+            .FirstOrDefault(h => string.Equals(h.Id, tunerHostId, StringComparison.OrdinalIgnoreCase))?.Url;
+        return snapshot.Catalog.ResolveUrl(url);
+    }
+
+    /// <summary>
     /// Gets the tuner a library item belongs to, if it is a Live TV channel or program.
     /// </summary>
     /// <param name="snapshot">The snapshot this decision uses.</param>

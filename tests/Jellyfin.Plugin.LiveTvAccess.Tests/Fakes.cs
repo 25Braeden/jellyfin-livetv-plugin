@@ -137,6 +137,15 @@ public sealed class World
 
         Tuner1Channel = AddChannel(Tuner1Url, "stream-a");
         Tuner2Channel = AddChannel(Tuner2Url, "stream-b");
+        Tuner1Program = AddItem(new LiveTvProgram { ChannelId = Tuner1Channel.Id, Name = "p1" });
+        Tuner2Program = AddItem(new LiveTvProgram { ChannelId = Tuner2Channel.Id, Name = "p2" });
+        Movie = AddItem(new MediaBrowser.Controller.Entities.Movies.Movie { Name = "Test Movie", Path = "/media/library/movies/m.mp4" });
+        Song = AddItem(new MediaBrowser.Controller.Entities.Audio.Audio { Name = "Test Tone", Path = "/media/library/music/t.mp3" });
+        LibraryFolder = AddItem(new Folder { Name = "Movies", Path = "/media/library/movies" });
+        Recording = AddItem(new Video { Name = "Recorded show", Path = "/recordings/show/episode.ts" });
+        LiveStreams[Tuner1StreamId] = "host1";
+        LiveStreams[Tuner2StreamId] = "host2";
+        LiveStreams[OtherProviderStreamId] = null;
 
         var (library, libraryFake) = Fake<ILibraryManager>.Create();
         LibraryFake = libraryFake;
@@ -145,6 +154,18 @@ public sealed class World
             if (args[0] is not Guid id)
             {
                 return null;
+            }
+
+            // Like Jellyfin: the empty id throws (LibraryManager.GetItemById), and some stored rows can't be
+            // deserialized (e.g. the placeholder row 00000000000000000000000000000001).
+            if (id == Guid.Empty)
+            {
+                throw new ArgumentException("Guid can't be empty", "id");
+            }
+
+            if (ThrowingIds.Contains(id))
+            {
+                throw new InvalidOperationException("Cannot deserialize unknown type.");
             }
 
             var item = Items.GetValueOrDefault(id);
@@ -167,13 +188,35 @@ public sealed class World
 
         var (mediaSources, msFake) = Fake<IMediaSourceManager>.Create();
         MediaSourcesFake = msFake;
+        pathsFake.Handlers["get_DataPath"] = _ => "/data";
+        msFake.Handlers["GetLiveStreamInfo"] = args =>
+        {
+            if (args[0] is not string id || !LiveStreams.TryGetValue(id, out var hostId))
+            {
+                return null;
+            }
+
+            var (stream, streamFake) = Fake<MediaBrowser.Controller.Library.ILiveStream>.Create();
+            streamFake.Handlers["get_TunerHostId"] = _ => hostId;
+            return stream;
+        };
         var (config, configFake) = Fake<IConfigurationManager>.Create();
-        configFake.Handlers["GetConfiguration"] = _ => new LiveTvOptions();
+        configFake.Handlers["GetConfiguration"] = _ => new LiveTvOptions
+        {
+            TunerHosts = [new TunerHostInfo { Id = "host1", Type = "m3u", Url = Tuner1Url }, new TunerHostInfo { Id = "host2", Type = "m3u", Url = Tuner2Url }],
+            RecordingPath = "/recordings",
+        };
+        configFake.Handlers["get_CommonApplicationPaths"] = _ => paths;
 
         LibraryManager = library;
 
         // BaseItem.UpdateToRepositoryAsync goes through this static (set by Jellyfin at startup).
         BaseItem.LibraryManager = library;
+
+        // Video.SourceType asks this static whether the file is an active recording (set by Jellyfin at startup).
+        var (recordings, recordingsFake) = Fake<IRecordingsManager>.Create();
+        recordingsFake.Handlers["GetActiveRecordingInfo"] = args => ActiveRecordingPaths.Contains((string)args[0]!) ? new ActiveRecordingInfo() : null;
+        Video.RecordingsManager = recordings;
         UserManager = users;
         Access = new AccessService(library, mediaSources, users, config, NullLogger<AccessService>.Instance);
         SetConfig(DefaultConfig());
@@ -222,6 +265,43 @@ public sealed class World
     public LiveTvChannel Tuner1Channel { get; }
 
     public LiveTvChannel Tuner2Channel { get; }
+
+    public LiveTvProgram Tuner1Program { get; }
+
+    public LiveTvProgram Tuner2Program { get; }
+
+    public BaseItem Movie { get; }
+
+    public BaseItem Song { get; }
+
+    public BaseItem LibraryFolder { get; }
+
+    public BaseItem Recording { get; }
+
+    /// <summary>Ids whose lookup throws, like Jellyfin's placeholder row.</summary>
+    public HashSet<Guid> ThrowingIds { get; } = [Guid.Parse("00000000000000000000000000000001")];
+
+    /// <summary>Paths reported as active recordings.</summary>
+    public HashSet<string> ActiveRecordingPaths { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Open live streams: id -> tuner host id (null for a non-tuner stream).</summary>
+    public Dictionary<string, string?> LiveStreams { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public static readonly string Tuner1StreamId = $"{JellyfinIds.LiveTvProviderPrefix}_af999c25a00715699361240d4c6c7a53_4ddd999f02971aec37a820d93a68cb59";
+
+    public static readonly string Tuner2StreamId = $"{JellyfinIds.LiveTvProviderPrefix}_af999c25a00715699361240d4c6c7a53_5ec6f96467952921c6e26b7f28e0b318";
+
+    public static readonly string OtherProviderStreamId = "0123456789abcdef0123456789abcdef_somestream";
+
+    public string TokenFor(BaseItem channel) => $"{JellyfinIds.LiveTvProviderPrefix}_LiveTvChannel_{channel.Id:N}_{JellyfinIds.Md5Guid(channel.Name)}";
+
+    public T AddItem<T>(T item)
+        where T : BaseItem
+    {
+        item.Id = Guid.NewGuid();
+        Items[item.Id] = item;
+        return item;
+    }
 
     public static PluginConfiguration DefaultConfig() => new()
     {
@@ -302,13 +382,29 @@ public sealed class World
     public static ClaimsPrincipal PrincipalWithoutUserClaim()
         => new(new ClaimsIdentity([new Claim(ClaimTypes.Name, "someone")], "CustomAuthentication"));
 
-    public static ActionExecutingContext Context(ClaimsPrincipal principal, IDictionary<string, object?> arguments, string method = "POST", string? template = null)
+    public static ActionExecutingContext Context(
+        ClaimsPrincipal principal,
+        IDictionary<string, object?> arguments,
+        string method = "POST",
+        string? template = null,
+        string? controller = null,
+        string? action = null,
+        params string[] routeArgs)
     {
         var http = new DefaultHttpContext { User = principal };
         http.Request.Method = method;
-        var descriptor = new ActionDescriptor { AttributeRouteInfo = template is null ? null : new AttributeRouteInfo { Template = template } };
-        var action = new ActionContext(http, new RouteData(), descriptor);
-        return new ActionExecutingContext(action, new List<IFilterMetadata>(), arguments, controller: new object());
+        ActionDescriptor descriptor = controller is null
+            ? new ActionDescriptor()
+            : new Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor { ControllerName = controller, ActionName = action ?? string.Empty };
+        descriptor.AttributeRouteInfo = template is null ? null : new AttributeRouteInfo { Template = template };
+        var routeData = new RouteData();
+        foreach (var name in routeArgs)
+        {
+            routeData.Values[name] = arguments[name];
+        }
+
+        var actionContext = new ActionContext(http, routeData, descriptor);
+        return new ActionExecutingContext(actionContext, new List<IFilterMetadata>(), arguments, controller: new object());
     }
 
     /// <summary>Runs the filter; returns the short-circuit status code, or null if the action ran.</summary>
@@ -316,10 +412,21 @@ public sealed class World
         => (await RunFilterWithBody(principal, arguments, method, template)).Status;
 
     /// <summary>Runs the filter; returns the short-circuit status and body text, or (null, null) if the action ran.</summary>
-    public async Task<(int? Status, string? Body)> RunFilterWithBody(ClaimsPrincipal principal, IDictionary<string, object?> arguments, string method = "POST", string? template = null)
+    public Task<(int? Status, string? Body)> RunFilterWithBody(ClaimsPrincipal principal, IDictionary<string, object?> arguments, string method = "POST", string? template = null)
+        => RunAt(principal, arguments, null, null, method, template);
+
+    /// <summary>Runs the filter as a specific controller action; <paramref name="routeArgs"/> are route-bound.</summary>
+    public async Task<(int? Status, string? Body)> RunAt(
+        ClaimsPrincipal principal,
+        IDictionary<string, object?> arguments,
+        string? controller,
+        string? action,
+        string method = "POST",
+        string? template = null,
+        params string[] routeArgs)
     {
         var filter = new Filters.LiveTvAccessFilter(Access, Signals, NullLogger<Filters.LiveTvAccessFilter>.Instance);
-        var context = Context(principal, arguments, method, template);
+        var context = Context(principal, arguments, method, template, controller, action, routeArgs);
         var ran = false;
         await filter.OnActionExecutionAsync(context, () =>
         {

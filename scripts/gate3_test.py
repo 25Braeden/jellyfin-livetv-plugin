@@ -19,9 +19,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import nocode_experiment as n  # noqa: E402
+import library_fixture  # noqa: E402
 
 PLUGIN_ID = "4d5aa36c91644f4dba7f0fa6c25bfd28"
 CONFIG = {
@@ -269,9 +271,9 @@ def main():
     old_c = set_policy("C", EnableLiveTvAccess=True)
     try:
         C2, c2u, _ = n.login("C", "gate3-C-livetv-on")
-        st, ch = C2.get("/LiveTv/Channels", userId=c2u)
-        check("unmapped user with Live TV ON: channel list has no channels",
-              st == 200 and len(ch["Items"]) == 0, f"HTTP {st}, {len(ch['Items']) if st == 200 else '-'} channels")
+        r = C2.get("/LiveTv/Channels", userId=c2u)
+        check("unmapped user with Live TV ON: channel list = 403 + generic message (no tuner)",
+              r[0] == 403 and text(r) == DENIED, f"HTTP {r[0]}")
         r = C2.post(f"/Items/{news}/PlaybackInfo", {"UserId": c2u, "AutoOpenLiveStream": True})
         check("unmapped user with Live TV ON: PlaybackInfo = 403 + generic message", r[0] == 403 and text(r) == DENIED, text(r))
     finally:
@@ -290,13 +292,76 @@ def main():
         time.sleep(2)
     check("A plays again once native Live TV is back on", plays(A, a_uid, news)[0])
 
+    print("== 13. default-deny (fix 5)")
+    # Give A Jellyfin's own Live TV management permission, so the timer checks test the plugin, not Jellyfin.
+    old_mgmt = set_policy("A", EnableLiveTvManagement=True)
+    A3, a3u, a3_session = n.login("A", "gate3-A-fix5")
+    own_prog = n.ok(admin.get("/LiveTv/Programs", userId=aid, channelIds=news, limit=1), "prog")["Items"][0]["Id"]
+    other_prog = n.ok(admin.get("/LiveTv/Programs", userId=aid, channelIds=movies, limit=1), "prog")["Items"][0]["Id"]
+    for label, (method, path, body, query, expect) in {
+        "LiveTv/Info (allowlisted)": ("GET", "/LiveTv/Info", None, {}, 200),
+        "LiveTv/GuideInfo (allowlisted)": ("GET", "/LiveTv/GuideInfo", None, {}, 200),
+        "LiveTv/Channels/{own} (allowlisted)": ("GET", f"/LiveTv/Channels/{news}", None, {"userId": a3u}, 200),
+        "LiveTv/Channels/{other tuner}": ("GET", f"/LiveTv/Channels/{movies}", None, {"userId": a3u}, 403),
+        "LiveTv/Programs/{own} (allowlisted)": ("GET", f"/LiveTv/Programs/{own_prog}", None, {"userId": a3u}, 200),
+        "LiveTv/Programs/{other tuner}": ("GET", f"/LiveTv/Programs/{other_prog}", None, {"userId": a3u}, 403),
+        "LiveTv/Programs/Recommended (allowlisted)": ("GET", "/LiveTv/Programs/Recommended", None, {"userId": a3u, "isAiring": "true"}, 200),
+        "LiveTv/Timers list": ("GET", "/LiveTv/Timers", None, {}, 403),
+        "LiveTv/Timers create on OWN channel": ("POST", "/LiveTv/Timers", {"ChannelId": news, "Name": "g3", "StartDate": "2030-01-01T00:00:00Z", "EndDate": "2030-01-01T00:30:00Z"}, {}, 403),
+        "LiveTv/SeriesTimers list": ("GET", "/LiveTv/SeriesTimers", None, {}, 403),
+        "LiveTv/Recordings list": ("GET", "/LiveTv/Recordings", None, {"userId": a3u}, 403),
+        "LiveTv/TunerHosts/Types": ("GET", "/LiveTv/TunerHosts/Types", None, {}, 403),
+        "Items?ids={other tuner}": ("GET", "/Items", None, {"userId": a3u, "ids": movies}, 403),
+        "Items?ids={own}": ("GET", "/Items", None, {"userId": a3u, "ids": news}, 200),
+        "Sessions/{own}/Playing?itemIds={other tuner}": ("POST", f"/Sessions/{a3_session}/Playing", None, {"playCommand": "PlayNow", "itemIds": movies}, 403),
+        "Sessions/Playing body ItemId={other tuner}": ("POST", "/Sessions/Playing", {"ItemId": movies, "PlaySessionId": "x"}, {}, 403),
+        "Items/{unknown id}/PlaybackInfo": ("POST", f"/Items/{uuid.uuid4().hex}/PlaybackInfo", {"UserId": a3u}, {}, 403),
+        "Videos/{unknown id}/stream.ts": ("GET", f"/Videos/{uuid.uuid4().hex}/stream.ts", None, {"static": "true"}, 403),
+        "Items/{placeholder row id}/PlaybackInfo": ("POST", f"/Items/{'0' * 31 + '1'}/PlaybackInfo", {"UserId": a3u}, {}, 403),
+        "LiveStreams/Open token of unknown provider": ("POST", "/LiveStreams/Open", {"OpenToken": "0123456789abcdef0123456789abcdef_LiveTvChannel_" + news, "UserId": a3u}, {}, 403),
+        "LiveStreams/Open with no token": ("POST", "/LiveStreams/Open", {"UserId": a3u}, {}, 403),
+    }.items():
+        r = A3.call(method, path, body=body, query=query or None)
+        good = r[0] == expect and (expect != 403 or text(r) == DENIED)
+        check(f"A {method} {label} = {expect}", good, f"HTTP {r[0]}" + (f": {text(r)[:60]}" if r[0] >= 400 else ""))
+    set_policy("A", **old_mgmt)
+    timers = n.ok(admin.get("/LiveTv/Timers"), "timers")["Items"]
+    check("no timer was created by A", not any(x.get("Name") == "g3" for x in timers))
+
+    print("== 14. library playback and browsing still work (A, and C with no tuner)")
+    lib = library_fixture.main()
+    for who in ("A", "C"):
+        api, uid, _ = n.login(who, f"gate3-lib-{who}")
+        st, res = api.get(f"/Users/{uid}/Items", parentId=lib["MoviesLibrary"], recursive="true")
+        check(f"{who} browses Test Movies", st == 200 and any(i["Id"] == lib["Movie"] for i in res["Items"]), f"HTTP {st}")
+        st, res = api.get("/Items", userId=uid, recursive="true", searchTerm="Test Movie")
+        check(f"{who} search finds Test Movie", st == 200 and any(i["Id"] == lib["Movie"] for i in res["Items"]), f"HTTP {st}")
+        st, _ = api.get("/UserViews", userId=uid)
+        check(f"{who} user views", st == 200, f"HTTP {st}")
+        st, info = api.post(f"/Items/{lib['Movie']}/PlaybackInfo", {"UserId": uid})
+        check(f"{who} movie PlaybackInfo", st == 200, f"HTTP {st}")
+        if st == 200:
+            ms = info["MediaSources"][0]["Id"]
+            q = urllib.parse.urlencode({"mediaSourceId": ms, "playSessionId": info["PlaySessionId"], "videoCodec": "h264", "audioCodec": "aac", "segmentContainer": "ts"})
+            st, master = raw_get(api, f"/Videos/{lib['Movie']}/master.m3u8?{q}")
+            sub = next((l for l in master.decode().splitlines() if l and not l.startswith("#")), None) if st == 200 else None
+            st2, media = raw_get(api, f"/Videos/{lib['Movie']}/{sub}", timeout=90) if sub else (st, b"")
+            segs = [l for l in media.decode().splitlines() if l and not l.startswith("#")] if st2 == 200 else []
+            st3, seg = raw_get(api, f"/Videos/{lib['Movie']}/{segs[0]}", timeout=90) if segs else (st2, b"")
+            check(f"{who} movie plays (HLS segment)", st3 == 200 and seg[:1] == b"G", f"HTTP {st}/{st2}/{st3}, {len(seg)} bytes")
+            api.call("DELETE", "/Videos/ActiveEncodings", query={"deviceId": f"gate3-lib-{who}", "playSessionId": info["PlaySessionId"]})
+        st, _ = raw_get(api, f"/Items/{lib['Movie']}/Images/Primary")
+        check(f"{who} movie image not blocked by the plugin", st != 403, f"HTTP {st}")
+        st, body = raw_get(api, f"/Audio/{lib['Audio']}/stream.mp3?static=true")
+        check(f"{who} song streams", st == 200 and len(body) > 0, f"HTTP {st}, {len(body)} bytes")
+
     print("== 10. logging")
     time.sleep(1)
     log = subprocess.run(["docker", "logs", "--since", since, "jellyfin-dev"], capture_output=True, text=True)
     log = log.stdout + log.stderr
     plugin_lines = [l for l in log.splitlines() if "LiveTvAccess" in l]
     check("plugin never logs a full open token", not any(t in l for t in tokens_used for l in plugin_lines))
-    check("denials log a short token hash", any("OpenToken=sha256:" in l for l in plugin_lines))
+    check("denials log a short token hash", any("=sha256:" in l and "denied" in l for l in plugin_lines))
 
     failed = [r for r in results if not r[1]]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

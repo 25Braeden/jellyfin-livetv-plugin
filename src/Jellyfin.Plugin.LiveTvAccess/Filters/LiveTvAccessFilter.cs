@@ -6,6 +6,7 @@ using LiveTvAccess.Core;
 using MediaBrowser.Controller.LiveTv;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.Extensions.Logging;
@@ -13,25 +14,22 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.LiveTvAccess.Filters;
 
 /// <summary>
-/// Global MVC action filter that enforces per-user tuner access before Jellyfin does any work.
-/// <para>
-/// Instead of a list of endpoints it inspects every authenticated request for anything that names a
-/// Live TV channel or stream: an item/channel/program id (PlaybackInfo, /Videos/{itemId}/stream, HLS,
-/// channel details), a live stream id (streaming with an open stream, LiveStreams/Close) or an open
-/// token (LiveStreams/Open). This also covers the streaming endpoints, which look items up without a
-/// user and can open a tuner themselves (Jellyfin.Api/Helpers/StreamingHelpers.cs:111-130,
-/// MediaBrowser.MediaEncoding/Transcoding/TranscodeManager.cs:662-669).
-/// </para>
-/// It also turns Jellyfin's tuner-limit exception into a clean 409 instead of a generic 500.
+/// Global MVC action filter that enforces per-user tuner access before Jellyfin does any work. Default-deny for
+/// authenticated non-admin, non-API-key callers:
+/// <list type="bullet">
+/// <item>LiveTvController: only <see cref="LiveTvEndpoints.Allowlist"/> actions, and only for a user with a tuner,
+/// native Live TV permission, after the first sync. Everything else there is denied.</item>
+/// <item>Any action anywhere: every identifier in its arguments (route, query, header, and every nested property
+/// of body objects of any type) is resolved. Live TV channels, programs and tuner streams must be on the user's
+/// tuner; recordings are denied; route content identifiers and token/stream-shaped values must resolve.</item>
+/// <item>LiveStreams/Open and LiveStreams/Close must name a resolvable target.</item>
+/// </list>
+/// This also covers the streaming endpoints, which look items up without a user and can open a tuner themselves
+/// (Jellyfin.Api/Helpers/StreamingHelpers.cs:111-130, MediaBrowser.MediaEncoding/Transcoding/TranscodeManager.cs:662-669).
+/// Every denial returns the same 403 text. Tuner-limit exceptions become a clean 409.
 /// </summary>
 public class LiveTvAccessFilter : IAsyncActionFilter
 {
-    // Action argument names (Jellyfin 10.11.11 controllers). Version-fragile.
-    private static readonly string[] _itemIdArguments = ["itemId", "channelId", "programId"];
-
-    // Properties read from request bodies (PlaybackInfoDto, OpenLiveStreamDto; Jellyfin.Api, not on NuGet).
-    private static readonly string[] _bodyProperties = ["ItemId", "LiveStreamId", "OpenToken"];
-
     private readonly AccessService _access;
     private readonly ISyncSignals _sync;
     private readonly ILogger<LiveTvAccessFilter> _logger;
@@ -49,13 +47,6 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         _logger = logger;
     }
 
-    private enum TargetKind
-    {
-        Item,
-        LiveStream,
-        OpenToken,
-    }
-
     /// <inheritdoc />
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
@@ -65,37 +56,9 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         // Anonymous requests: Jellyfin's own authorization decides (streaming endpoints require auth).
         var started = Stopwatch.GetTimestamp();
         var caller = _access.GetCaller(context.HttpContext.User);
-        if (caller is { } c && !AccessPolicy.IsExempt(c))
+        if (caller is { } c && !AccessPolicy.IsExempt(c) && !Admit(context, c, started))
         {
-            // One snapshot for the whole decision: a concurrent config change can't mix catalog and map.
-            var snapshot = _access.Snapshot;
-            var targets = 0;
-            foreach (var (kind, value) in GetTargets(context.ActionArguments))
-            {
-                targets++;
-                var (decision, isLiveTv) = Check(c, snapshot, kind, value);
-                if (!isLiveTv || decision == AccessDecision.Allow)
-                {
-                    continue;
-                }
-
-                _logger.LogInformation(
-                    "LiveTvAccess: denied {Decision} user={UserId} {Method} {Route} {Kind}={Target}",
-                    decision,
-                    c.UserId.ToString("N"),
-                    context.HttpContext.Request.Method,
-                    context.ActionDescriptor.AttributeRouteInfo?.Template ?? "(unknown)",
-                    kind,
-                    kind == TargetKind.Item ? value : Redact.ShortHash(value));
-                context.Result = PlainText(StatusCodes.Status403Forbidden, AccessPolicy.Message(decision));
-                LogCheckTime(started, targets, denied: true);
-                return;
-            }
-
-            if (targets > 0)
-            {
-                LogCheckTime(started, targets, denied: false);
-            }
+            return;
         }
 
         var executed = await next().ConfigureAwait(false);
@@ -120,55 +83,70 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         }
     }
 
-    private static IEnumerable<(TargetKind Kind, string Value)> GetTargets(IDictionary<string, object?> arguments)
+    /// <summary>
+    /// Decides a request for a non-exempt caller. Sets a 403 result and returns <c>false</c> on denial.
+    /// </summary>
+    private bool Admit(ActionExecutingContext context, Caller caller, long started)
     {
-        foreach (var (name, value) in arguments)
-        {
-            if (value is null)
-            {
-                continue;
-            }
+        // One snapshot for the whole decision: a concurrent config change can't mix catalog and map.
+        var snapshot = _access.Snapshot;
+        var ready = _sync.IsReady;
+        var action = context.ActionDescriptor as ControllerActionDescriptor;
 
-            if (Array.Exists(_itemIdArguments, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase)))
+        if (string.Equals(action?.ControllerName, LiveTvEndpoints.LiveTvController, StringComparison.Ordinal))
+        {
+            var endpoint = AccessPolicy.DecideEndpoint(caller, snapshot.Map, LiveTvEndpoints.Allowlist.Contains(action!.ActionName), ready);
+            if (endpoint != AccessDecision.Allow)
             {
-                if (value is Guid id)
-                {
-                    yield return (TargetKind.Item, id.ToString("N"));
-                }
-                else if (value is string s && Guid.TryParse(s, out var parsed))
-                {
-                    yield return (TargetKind.Item, parsed.ToString("N"));
-                }
-            }
-            else if (string.Equals(name, "liveStreamId", StringComparison.OrdinalIgnoreCase) && value is string ls && ls.Length > 0)
-            {
-                yield return (TargetKind.LiveStream, ls);
-            }
-            else if (string.Equals(name, "openToken", StringComparison.OrdinalIgnoreCase) && value is string token && token.Length > 0)
-            {
-                yield return (TargetKind.OpenToken, token);
-            }
-            else if (value.GetType() is { IsClass: true } type && type != typeof(string) && type.Namespace?.StartsWith("Jellyfin.Api", StringComparison.Ordinal) == true)
-            {
-                // Request bodies, read by name (types live in Jellyfin.Api, which is not on NuGet).
-                foreach (var property in _bodyProperties)
-                {
-                    var v = type.GetProperty(property)?.GetValue(value);
-                    switch (property, v)
-                    {
-                        case ("ItemId", Guid g) when g != Guid.Empty:
-                            yield return (TargetKind.Item, g.ToString("N"));
-                            break;
-                        case ("LiveStreamId", string s) when s.Length > 0:
-                            yield return (TargetKind.LiveStream, s);
-                            break;
-                        case ("OpenToken", string s) when s.Length > 0:
-                            yield return (TargetKind.OpenToken, s);
-                            break;
-                    }
-                }
+                return Deny(context, caller, endpoint, "endpoint", action.ActionName, started, 0);
             }
         }
+
+        if (!TargetCollector.TryCollect(context, out var values))
+        {
+            return Deny(context, caller, AccessDecision.DenyUnresolved, "request", "too large or deep to inspect", started, values.Count);
+        }
+
+        var resolvedTarget = false;
+        foreach (var value in values)
+        {
+            var target = _access.Classify(snapshot, value);
+            var decision = AccessPolicy.DecideTarget(caller, snapshot.Map, target, ready);
+            if (decision != AccessDecision.Allow)
+            {
+                return Deny(context, caller, decision, "target", value.Guid is null ? Redact.ShortHash(value.Text) : value.Text, started, values.Count);
+            }
+
+            // A resolved Live TV target, or a resolved stream/token of another provider.
+            resolvedTarget |= target.Kind == TargetKind.LiveTv || (target.Kind == TargetKind.NotLiveTv && value.Guid is null);
+        }
+
+        if (action is not null && !resolvedTarget && LiveTvEndpoints.RequireTarget.Contains((action.ControllerName, action.ActionName)))
+        {
+            return Deny(context, caller, AccessDecision.DenyMissingTarget, "endpoint", action.ActionName, started, values.Count);
+        }
+
+        if (values.Count > 0)
+        {
+            LogCheckTime(started, values.Count, denied: false);
+        }
+
+        return true;
+    }
+
+    private bool Deny(ActionExecutingContext context, Caller caller, AccessDecision decision, string what, string detail, long started, int targets)
+    {
+        _logger.LogInformation(
+            "LiveTvAccess: denied {Decision} user={UserId} {Method} {Route} {What}={Detail}",
+            decision,
+            caller.UserId.ToString("N"),
+            context.HttpContext.Request.Method,
+            context.ActionDescriptor.AttributeRouteInfo?.Template ?? context.ActionDescriptor.DisplayName ?? "(unknown)",
+            what,
+            detail);
+        context.Result = PlainText(StatusCodes.Status403Forbidden, AccessPolicy.Message(decision));
+        LogCheckTime(started, targets, denied: true);
+        return false;
     }
 
     private void LogCheckTime(long started, int targets, bool denied)
@@ -223,28 +201,4 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         Content = message,
         ContentType = "text/plain; charset=utf-8",
     };
-
-    private (AccessDecision Decision, bool IsLiveTv) Check(Caller caller, AccessSnapshot snapshot, TargetKind kind, string value)
-    {
-        string? tuner;
-        bool isLiveTv;
-        switch (kind)
-        {
-            case TargetKind.Item:
-                tuner = _access.GetItemTuner(snapshot, Guid.ParseExact(value, "N"), out isLiveTv);
-                break;
-            case TargetKind.LiveStream:
-                tuner = _access.GetLiveStreamTuner(snapshot, value, out isLiveTv);
-                break;
-            default:
-                // Only Live TV provider tokens can reach a tuner (MediaSourceManager.cs:886-899 dispatches
-                // by prefix). A Live TV token we cannot parse, or that names a non-channel, is denied.
-                tuner = JellyfinIds.TryParseLiveTvOpenToken(value, out isLiveTv, out var itemId)
-                    ? _access.GetItemTuner(snapshot, itemId, out _)
-                    : null;
-                break;
-        }
-
-        return (AccessPolicy.Decide(caller, snapshot.Map, tuner, _sync.IsReady), isLiveTv);
-    }
 }

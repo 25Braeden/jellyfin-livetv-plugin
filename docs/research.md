@@ -395,3 +395,64 @@ the next refresh took 4 s. Gate 3 acceptance then passed 45/45.
   403 on PlaybackInfo; a mapped user with native Live TV OFF gets 403 on PlaybackInfo and LiveStreams/Open for
   their own channel, and plays again when it is turned back on.
 - Still open (Fix 5, default-deny): GM2/CG3 timer bodies, CG2 unrecognized token providers, GM5 id arrays.
+
+## Gate 3.5 phase 2, fix 5: default-deny filter (2026-10-19)
+
+For authenticated callers that aren't admins or user-less API keys, `LiveTvAccessFilter` now treats everything that
+can reach Live TV content as protected:
+
+1. **LiveTvController** (`Jellyfin.Api/Controllers/LiveTvController.cs`): only the allowlist below, and only for a
+   user with a tuner, native Live TV permission, after the first sync (`AccessPolicy.DecideEndpoint`).
+2. **Every action anywhere** (Videos, Audio, HLS, Items, Users/{id}/Items, Sessions, Playstate, SyncPlay, images, …):
+   `TargetCollector` walks *all* action arguments, whatever their names (route, query, header, body), and every
+   nested readable property of body objects of any non-framework type (depth ≤ 8, ≤ 50,000 values; larger is denied).
+   It collects GUIDs, GUID-shaped strings (any format Jellyfin's `new Guid(string)` accepts), and provider-prefixed
+   strings (`{32 hex}_…`, open tokens and live stream ids). `AccessService.Classify` resolves each one, and
+   `AccessPolicy.DecideTarget` decides it.
+3. **LiveStreams/Open and LiveStreams/Close** must name a resolvable target (`DenyMissingTarget` otherwise).
+
+**Allowlist (non-admin, mapped user), `LiveTvEndpoints.Allowlist`:**
+
+| Action | Route |
+|---|---|
+| GetLiveTvInfo | GET LiveTv/Info |
+| GetLiveTvChannels | GET LiveTv/Channels |
+| GetChannel | GET LiveTv/Channels/{channelId} (own tuner only) |
+| GetLiveTvPrograms | GET LiveTv/Programs |
+| GetPrograms | POST LiveTv/Programs (ChannelIds must be own tuner) |
+| GetRecommendedPrograms | GET LiveTv/Programs/Recommended ("On Now") |
+| GetProgram | GET LiveTv/Programs/{programId} (own tuner only) |
+| GetGuideInfo | GET LiveTv/GuideInfo |
+
+Playback info and stream open/close for own-tuner channels live on MediaInfoController and are allowed by the target
+rules. Everything else on LiveTvController is denied for non-admins: timers, series timers, recordings
+(including `LiveRecordings/{id}/stream`), tuner and listing-provider management, channel mappings, tuner discovery,
+`LiveStreamFiles` for authenticated callers, and any action added in a future version.
+
+**Decisions (confirmed by the user, 2026-10-19):**
+- **Unresolvable values.** The route's content identifier (`itemId`, `routeItemId`, `channelId`, `programId`,
+  `recordingId`, `seriesId`, `videoId`, `collectionId`, `streamId`, `timerId`) must resolve, or the request is denied.
+  Anything shaped like a Live TV token or stream id (any provider prefix) must resolve. Every other value is still
+  inspected, but if it doesn't resolve it's ignored: play-session ids, media-source ids, device ids, and HLS
+  `{playlistId}` are GUID-shaped values that aren't items, and can't reach a channel on their own. A lookup that
+  throws is treated as unresolvable and denied, whatever argument it came from.
+- **Users with no tuner** (e.g. C with native Live TV on) are denied the Live TV listings too (403), not given an
+  empty list.
+- **Recordings** are denied for non-admins: active ones (`Video.SourceType == LiveTV`, `Video.cs:168-177`) and finished
+  ones (files under the recording folders, `RecordingsManager.cs:106-170`). DVR isn't in the requirements. **DVR support
+  would need recordings mapped to tuners** (e.g. via the timer's channel) before non-admins could be allowed.
+
+All denials, including unresolvable route ids, return the same 403 text, so "doesn't exist" can't be told apart from
+"not yours".
+
+**Bugs found live and fixed (tests fail without the fix):** `LibraryManager.GetItemById(Guid.Empty)` throws, and a
+malformed Live TV token made the classifier look it up (500). Jellyfin's placeholder row
+`00000000000000000000000000000001` throws "Cannot deserialize unknown type" on load (500). Both now deny with 403.
+
+**Acceptance:** `gate3_test.py` 86/86. New section 13 covers the allowlist and default-deny live: A with Jellyfin's own
+LiveTvManagement permission still can't create a timer; Items?ids, Sessions/{id}/Playing?itemIds, Playstate bodies,
+unknown and placeholder route ids, unknown-provider tokens and a missing open token are denied. Section 14
+(`scripts/library_fixture.py`, local test movie and song) proves library browse, search, views, PlaybackInfo, HLS
+playback, images and audio streaming still work for A and for C (no tuner).
+
+All 15 review findings reproduced in phase 1 are now fixed; no tests carry `Category=KnownIssue`.

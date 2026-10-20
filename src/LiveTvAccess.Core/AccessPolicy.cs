@@ -86,4 +86,54 @@ public static class AccessPolicy
     /// <returns><see cref="DeniedMessage"/> for every denial; empty for <see cref="AccessDecision.Allow"/>.</returns>
     public static string Message(AccessDecision decision)
         => decision == AccessDecision.Allow ? string.Empty : DeniedMessage;
+
+    /// <summary>
+    /// Decides one classified identifier found in a request (default-deny surface).
+    /// </summary>
+    /// <param name="caller">The caller.</param>
+    /// <param name="map">The user-to-tuner map.</param>
+    /// <param name="target">The classified identifier.</param>
+    /// <param name="isReady">Whether the plugin's first sync has completed.</param>
+    /// <returns>The decision.</returns>
+    public static AccessDecision DecideTarget(Caller caller, UserTunerMap map, TargetInfo target, bool isReady)
+    {
+        if (IsExempt(caller))
+        {
+            return AccessDecision.Allow;
+        }
+
+        return target.Kind switch
+        {
+            TargetKind.NotLiveTv => AccessDecision.Allow,
+            TargetKind.Unresolved => target.MustResolve ? AccessDecision.DenyUnresolved : AccessDecision.Allow,
+            TargetKind.Recording => AccessDecision.DenyRecording,
+            _ => Decide(caller, map, target.TunerKey, isReady),
+        };
+    }
+
+    /// <summary>
+    /// Decides a Live TV endpoint itself: non-admins may only use allowlisted actions, and only with a tuner,
+    /// native Live TV permission, and after the first sync.
+    /// </summary>
+    /// <param name="caller">The caller.</param>
+    /// <param name="map">The user-to-tuner map.</param>
+    /// <param name="isAllowlisted">Whether the action is on the non-admin allowlist.</param>
+    /// <param name="isReady">Whether the plugin's first sync has completed.</param>
+    /// <returns>The decision.</returns>
+    public static AccessDecision DecideEndpoint(Caller caller, UserTunerMap map, bool isAllowlisted, bool isReady)
+    {
+        ArgumentNullException.ThrowIfNull(map);
+        if (IsExempt(caller))
+        {
+            return AccessDecision.Allow;
+        }
+
+        if (!isAllowlisted)
+        {
+            return AccessDecision.DenyEndpoint;
+        }
+
+        // Same checks as for one of the user's own channels: ready, native permission, and having a tuner.
+        return Decide(caller, map, map.GetTuner(caller.UserId), isReady);
+    }
 }
