@@ -189,6 +189,24 @@ public class Fix7Tests
     }
 
     [Fact]
+    public async Task StatusApiRefreshes_DoNotResetTheClaimEvidenceWindow()
+    {
+        // Final review Q8: an admin's ?refresh=true used to consume the evidence, hiding a broken claim contract.
+        var w = new World();
+        var (service, _, _, _) = Create(w);
+        for (var i = 0; i < 3; i++)
+        {
+            w.Access.GetCaller(World.PrincipalWithoutUserClaim());
+        }
+
+        var controller = new LiveTvAccessController(service);
+        Assert.Equal(SelfCheckStatus.Failed, (await controller.GetStatus(true, CancellationToken.None)).Value!.State);
+        Assert.Equal(SelfCheckStatus.Failed, (await controller.GetStatus(true, CancellationToken.None)).Value!.State);
+        Assert.Equal(SelfCheckStatus.Failed, (await service.RunAsync("scheduled", CancellationToken.None)).State);
+        Assert.Equal(SelfCheckStatus.Healthy, (await service.RunAsync("scheduled", CancellationToken.None)).State);
+    }
+
+    [Fact]
     public async Task TunerNotMatchingJellyfin_Fails_AndRecoversWhenFixed()
     {
         var w = new World();

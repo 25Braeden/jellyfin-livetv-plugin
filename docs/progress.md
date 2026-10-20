@@ -30,6 +30,7 @@
 | 2026-10-20 | Final review R7: history tags stay blocked while channels are re-tagged after a key rename (Q3) | ed98e8e | unit green; Gate 3 at the end of the series |
 | 2026-10-20 | Final review R8: unresolvable name-only user entries dropped at save (Q5) | 26b90c4 | unit green; Gate 3 at the end of the series |
 | 2026-10-20 | Final review R9: a play session id doesn't satisfy LiveStreams/Open's target rule (Q6) | see git log | unit green; Gate 3 at the end of the series |
+| 2026-10-20 | Final review R10: status API refreshes don't reset the claim-evidence window (Q8) | see git log | unit green; Gate 3 at the end of the series |
 
 ## Scale test (16,000 channels), 2026-10-19
 

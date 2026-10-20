@@ -36,5 +36,5 @@ public class LiveTvAccessController : ControllerBase
     [HttpGet("Status")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<SelfCheckStatus>> GetStatus([FromQuery] bool refresh, CancellationToken cancellationToken)
-        => refresh ? await _selfCheck.RunAsync("status API", cancellationToken).ConfigureAwait(false) : _selfCheck.Status;
+        => refresh ? await _selfCheck.RunAsync(SelfCheckService.StatusApiTrigger, cancellationToken).ConfigureAwait(false) : _selfCheck.Status;
 }

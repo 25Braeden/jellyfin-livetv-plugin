@@ -984,3 +984,17 @@ through the plugin's must-name-a-target rule (`LiveTvEndpoints.RequireTarget`): 
 plugin's 403. That's because a non-GUID play session id that isn't a running job counted as a resolved non-Live-TV
 target. Play-session values no longer count towards that rule. A test failed first; Gate 3 section 21 checks the live
 403.
+
+### R10. Claim-evidence window: only completed scheduled or event runs consume it (independent review Q8)
+
+**Confirmed in code.** `CheckClaims` reset its "requests since the last check" counters on every run, including admin
+`?refresh=true` calls and runs cancelled after that point. Repeated refreshes could therefore hide a broken claim
+contract. The counts are now read once per run, and the window advances only after a completed run whose trigger
+isn't the status API. A test failed first: two API refreshes and one scheduled run all stay Failed, and the next
+scheduled run, with no new evidence, is Healthy.
+
+**Q8's other points: limits of the heuristic, documented rather than fixed.**
+- A *partial* claim drift (for example, only API keys losing their claim) isn't detected as such. It always fails
+  closed: unrecognized principals get no Live TV, and an API key without its claim isn't exempt.
+- The registration check confirms the filter is in `MvcOptions`, not that it runs on every route. The plugin can't see
+  requests the filter doesn't see. `RequestsChecked` is shown in the status for a human to compare.

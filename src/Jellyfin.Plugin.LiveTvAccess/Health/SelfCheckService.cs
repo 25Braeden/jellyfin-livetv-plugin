@@ -30,6 +30,9 @@ namespace Jellyfin.Plugin.LiveTvAccess.Health;
 /// </summary>
 public sealed class SelfCheckService : ISelfCheck, IHostedService, IDisposable
 {
+    /// <summary>Trigger name of on-demand runs from the status API; they don't advance the claim-evidence window.</summary>
+    public const string StatusApiTrigger = "status API";
+
     private const string RefreshGuideTaskKey = "RefreshGuide";
     private const int PageSize = 500;
 
@@ -106,9 +109,17 @@ public sealed class SelfCheckService : ISelfCheck, IHostedService, IDisposable
         try
         {
             SelfCheckStatus status;
+            var counts = _access.CallerCounts;
             try
             {
-                status = await EvaluateAsync(trigger, cancellationToken).ConfigureAwait(false);
+                status = await EvaluateAsync(trigger, counts, cancellationToken).ConfigureAwait(false);
+
+                // Only completed scheduled / event runs consume the claim evidence: on-demand API refreshes and
+                // cancelled runs leave the window open, so a broken claim contract can't be hidden by them.
+                if (!string.Equals(trigger, StatusApiTrigger, StringComparison.Ordinal))
+                {
+                    (_lastRecognized, _lastUnrecognized) = counts;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -255,7 +266,7 @@ public sealed class SelfCheckService : ISelfCheck, IHostedService, IDisposable
         }
     }
 
-    private async Task<SelfCheckStatus> EvaluateAsync(string trigger, CancellationToken ct)
+    private async Task<SelfCheckStatus> EvaluateAsync(string trigger, (long Recognized, long Unrecognized) counts, CancellationToken ct)
     {
         var checks = new List<CheckResult>();
         var problems = new List<string>();
@@ -278,7 +289,7 @@ public sealed class SelfCheckService : ISelfCheck, IHostedService, IDisposable
         problems.AddRange(drift.Select(d => "Jellyfin endpoint drift: " + d));
 
         // 3. Claim contract: the constants, and what requests actually carried since the last check.
-        var (claimOk, claimDetail) = CheckClaims();
+        var (claimOk, claimDetail) = CheckClaims(counts);
         checks.Add(new CheckResult("Claim contract", claimOk, claimDetail));
         if (!claimOk)
         {
@@ -321,14 +332,11 @@ public sealed class SelfCheckService : ISelfCheck, IHostedService, IDisposable
         };
     }
 
-    private (bool Ok, string Detail) CheckClaims()
+    private (bool Ok, string Detail) CheckClaims((long Recognized, long Unrecognized) counts)
     {
         var claims = _surface.GetClaimTypes();
-        var (recognized, unrecognized) = _access.CallerCounts;
-        var newRecognized = recognized - _lastRecognized;
-        var newUnrecognized = unrecognized - _lastUnrecognized;
-        _lastRecognized = recognized;
-        _lastUnrecognized = unrecognized;
+        var newRecognized = counts.Recognized - _lastRecognized;
+        var newUnrecognized = counts.Unrecognized - _lastUnrecognized;
 
         if (claims is null)
         {
