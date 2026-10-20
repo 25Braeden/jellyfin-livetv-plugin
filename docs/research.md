@@ -876,3 +876,22 @@ the GET listings use to fall back to the caller and forbid other users.
 
 **Live:** `{}` now returns A's guide with 0 tuner-2 programmes, `{UserId: B}` gets 403, and `{UserId: A}` works.
 Gate 3 section 21.
+
+### R3. Response shapes: the self-check and the scrubber agree (Sol #3)
+
+**Confirmed in code** (drift-detection weakness; not a 10.11.11 leak).
+- `EndpointContract` accepted any return type that merely *contained* the expected one, at any depth, so a wrapper
+  such as `Envelope<PlaybackInfoResponse>` passed.
+- `ResponseScrubber` only handles explicit shapes; a wrapper falls through `default` and is sent unchanged.
+
+**Fix:**
+- `ResponseScrubber.Supports(type)` lists the handled shapes. The contract unwraps only `Task<>`, `ValueTask<>` and
+  `ActionResult<>`, and the result must be a supported shape that contains the expected type.
+- At runtime, on the sensitive actions (the contract's actions with a response type, plus `GetNamedConfiguration` for
+  `livetv`, which must return `LiveTvOptions`), a successful non-admin response must be an `ObjectResult` of a handled
+  shape. Anything else (a wrapper, `JsonResult`, `ContentResult`) is replaced by the generic 403 and logged as
+  "unexpected response shape". Error responses (4xx/5xx, 204) pass unchanged; admins are unaffected.
+
+**Live:** the self-check is Healthy against the real 30 endpoints. A's PlaybackInfo, LiveStreams/Open, channel, program
+and recommended listings, POST Programs, Sessions, and both config keys still return 200. No "unexpected response
+shape" errors were logged.

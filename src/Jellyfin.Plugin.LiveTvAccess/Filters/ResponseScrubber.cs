@@ -30,6 +30,48 @@ public static class ResponseScrubber
     ];
 
     /// <summary>
+    /// Gets whether the scrubber handles a response type.
+    /// </summary>
+    /// <param name="type">The response type.</param>
+    /// <returns><c>true</c> if handled.</returns>
+    public static bool Supports(Type type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        return typeof(LiveTvOptions).IsAssignableFrom(type)
+            || typeof(PlaybackInfoResponse).IsAssignableFrom(type)
+            || typeof(LiveStreamResponse).IsAssignableFrom(type)
+            || typeof(BaseItemDto).IsAssignableFrom(type)
+            || typeof(SessionInfoDto).IsAssignableFrom(type)
+            || typeof(QueryResult<BaseItemDto>).IsAssignableFrom(type)
+            || typeof(IEnumerable<BaseItemDto>).IsAssignableFrom(type)
+            || typeof(IEnumerable<SessionInfoDto>).IsAssignableFrom(type);
+    }
+
+    /// <summary>
+    /// Gets the response type an action must return on success, if its responses can carry Live TV media sources
+    /// or the Live TV configuration: the actions with a response requirement in <see cref="Health.EndpointContract"/>,
+    /// and <c>GetNamedConfiguration</c> for the <c>livetv</c> key. Anything else from them is refused.
+    /// </summary>
+    /// <param name="controller">The controller name.</param>
+    /// <param name="action">The action name.</param>
+    /// <param name="arguments">The action arguments.</param>
+    /// <param name="exact">The exact type required (the Live TV configuration), or <c>null</c> for any handled shape.</param>
+    /// <returns><c>true</c> if the action's success responses are checked.</returns>
+    public static bool IsSensitive(string? controller, string? action, IDictionary<string, object?> arguments, out Type? exact)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        exact = null;
+        if (controller == "Configuration" && action == "GetNamedConfiguration")
+        {
+            var key = arguments.FirstOrDefault(a => string.Equals(a.Key, "key", StringComparison.OrdinalIgnoreCase)).Value as string;
+            exact = typeof(LiveTvOptions);
+            return string.Equals(key?.Trim(), "livetv", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return Health.EndpointContract.Requirements.Any(r => r.Returns is not null && r.Controller == controller && r.Action == action);
+    }
+
+    /// <summary>
     /// Returns a scrubbed deep copy of a response value, or the same instance if there is nothing to hide.
     /// </summary>
     /// <param name="value">The response value.</param>

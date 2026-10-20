@@ -250,7 +250,28 @@ public class LiveTvAccessFilter : IAsyncActionFilter
     /// </summary>
     private bool HideUpstreamUrls(ActionExecutingContext context, ActionExecutedContext executed, Caller caller)
     {
-        if (executed.Exception is not null || executed.Result is not ObjectResult { Value: { } value } result)
+        if (executed.Exception is not null)
+        {
+            return true;
+        }
+
+        // Actions whose responses can carry Live TV sources or configuration: a successful response must be a shape
+        // the scrubber handles; anything else (a new wrapper, a raw JSON or content result) is refused.
+        var action = context.ActionDescriptor as ControllerActionDescriptor;
+        if (ResponseScrubber.IsSensitive(action?.ControllerName, action?.ActionName, context.ActionArguments, out var exact)
+            && IsSuccess(executed.Result)
+            && !(executed.Result is ObjectResult { Value: var body }
+                && (body is null || (exact is null ? ResponseScrubber.Supports(body.GetType()) : exact.IsInstanceOfType(body)))))
+        {
+            _logger.LogError(
+                "LiveTvAccess: unexpected response shape {Shape} from {Action}; refusing it (has Jellyfin changed?)",
+                executed.Result is ObjectResult o ? o.Value?.GetType().Name : executed.Result?.GetType().Name,
+                action?.ActionName ?? "(unknown)");
+            executed.Result = PlainText(StatusCodes.Status403Forbidden, AccessPolicy.DeniedMessage);
+            return false;
+        }
+
+        if (executed.Result is not ObjectResult { Value: { } value } result)
         {
             return true;
         }
@@ -280,6 +301,11 @@ public class LiveTvAccessFilter : IAsyncActionFilter
             return false;
         }
     }
+
+    /// <summary>A result that would send a body to the client: 2xx, or no status (the default 200).</summary>
+    private static bool IsSuccess(IActionResult? result)
+        => result is not null && (result is not IStatusCodeActionResult { StatusCode: { } status } || status is >= 200 and < 300)
+            && result is not NoContentResult;
 
     private static bool IsLegacyHls(ControllerActionDescriptor? action)
         => action is not null

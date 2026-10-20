@@ -103,9 +103,12 @@ public static class EndpointContract
                     }
                 }
 
-                if (r.Returns is { } returns && (action.ReturnType is null || !Mentions(action.ReturnType, returns)))
+                // The response must be a shape the scrubber handles, not merely contain one (a wrapper would pass
+                // through it untouched).
+                if (r.Returns is { } returns
+                    && (Unwrap(action.ReturnType) is not { } inner || !Filters.ResponseScrubber.Supports(inner) || !Mentions(inner, returns)))
                 {
-                    missing.Add($"{name}: return type no longer contains {returns.Name}");
+                    missing.Add($"{name}: return type {Unwrap(action.ReturnType)?.Name ?? "(none)"} is not a response shape the scrubber handles (expected {returns.Name})");
                 }
 
                 if (r.TemplatePrefix is { } prefix
@@ -142,6 +145,19 @@ public static class EndpointContract
         return members
             .SelectMany(m => m.Members.Where(name => m.Type.GetProperty(name) is null).Select(name => $"{m.Type.Name}.{name} not found"))
             .ToArray();
+    }
+
+    /// <summary>The response type inside <c>Task&lt;&gt;</c>, <c>ValueTask&lt;&gt;</c> and <c>ActionResult&lt;&gt;</c>.</summary>
+    private static Type? Unwrap(Type? type)
+    {
+        while (type is { IsGenericType: true } && type.GetGenericTypeDefinition() is var definition
+            && (definition == typeof(System.Threading.Tasks.Task<>) || definition == typeof(System.Threading.Tasks.ValueTask<>)
+                || definition == typeof(Microsoft.AspNetCore.Mvc.ActionResult<>)))
+        {
+            type = type.GetGenericArguments()[0];
+        }
+
+        return type;
     }
 
     private static bool Mentions(Type type, Type target)
