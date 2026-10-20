@@ -62,9 +62,10 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         var started = Stopwatch.GetTimestamp();
         var caller = _access.GetCaller(context.HttpContext.User);
         var effective = caller ?? AnonymousCaller;
+        var action = context.ActionDescriptor as ControllerActionDescriptor;
         if (!AccessPolicy.IsExempt(effective)
-            && !(caller is null && LiveTvEndpoints.IsAnonymousPassThrough(context.ActionDescriptor as ControllerActionDescriptor))
-            && !Admit(context, effective, started))
+            && !(caller is null && LiveTvEndpoints.IsAnonymousPassThrough(action))
+            && !(IsLegacyHls(action) ? AdmitLegacyHls(context, action!, effective, caller is null, started) : Admit(context, effective, started)))
         {
             return;
         }
@@ -137,6 +138,109 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         if (values.Count > 0)
         {
             LogCheckTime(started, values.Count, denied: false);
+        }
+
+        return true;
+    }
+
+    private static bool IsLegacyHls(ControllerActionDescriptor? action)
+        => action is not null
+            && string.Equals(action.ControllerName, LiveTvEndpoints.LegacyHlsController, StringComparison.Ordinal)
+            && LiveTvEndpoints.LegacyHlsActions.Contains(action.ActionName);
+
+    /// <summary>
+    /// Legacy HLS file routes serve "{transcode folder}/{name}{ext}" by name. Only a running job's own files may be
+    /// served: names must be plain stems, the job is found by its exact playlist path, the segment must be exactly
+    /// one of that job's segment names, and the route's item id must resolve. Logged-in non-admins also get the
+    /// tuner check on the item and on the job's live stream. Anonymous requests for a running job are allowed
+    /// (accepted risk A1: some browsers fetch segments without auth; the random job name is the only secret).
+    /// </summary>
+    private bool AdmitLegacyHls(ActionExecutingContext context, ControllerActionDescriptor action, Caller caller, bool anonymous, long started)
+    {
+        var snapshot = _access.Snapshot;
+        var ready = _sync.IsReady;
+        string? Arg(string name) => context.ActionArguments.TryGetValue(name, out var v) ? v as string : null;
+        bool Refuse(string detail) => Deny(context, caller, AccessDecision.DenyUnresolved, "legacy-hls", detail, started, 0);
+
+        // The route item id must be a real item (Jellyfin itself ignores it).
+        if (!ProviderString.TryParseGuid(Arg("itemId"), out var itemId) || itemId == Guid.Empty)
+        {
+            return Refuse("item id");
+        }
+
+        var item = _access.Classify(snapshot, new CollectedValue(itemId.ToString("N"), itemId, IsRouteIdentifier: true));
+        if (item.Kind is TargetKind.Unresolved or TargetKind.Recording)
+        {
+            return Deny(context, caller, AccessPolicy.DecideTarget(caller, snapshot.Map, item, ready), "legacy-hls", "item", started, 1);
+        }
+
+        if (!anonymous && AccessPolicy.DecideTarget(caller, snapshot.Map, item, ready) is var itemDecision && itemDecision != AccessDecision.Allow)
+        {
+            return Deny(context, caller, itemDecision, "legacy-hls", "item", started, 1);
+        }
+
+        // The file: exactly one of a running job's own files.
+        MediaBrowser.Controller.MediaEncoding.TranscodingJob? job = null;
+        switch (action.ActionName)
+        {
+            case "GetHlsVideoSegmentLegacy":
+                var playlistId = Arg("playlistId");
+                var segmentId = Arg("segmentId");
+                var container = Arg("segmentContainer");
+                if (!HlsNames.IsSafeName(playlistId) || !HlsNames.IsSafeName(segmentId)
+                    || container is null || !HlsNames.SegmentExtensions.Contains(container)
+                    || !HlsNames.IsSegmentOf(playlistId!, segmentId!))
+                {
+                    return Refuse("segment name");
+                }
+
+                job = _access.FindHlsJob(playlistId!);
+                break;
+
+            case "GetHlsAudioSegmentLegacy":
+                var audioSegment = Arg("segmentId");
+                if (!HlsNames.IsSafeName(audioSegment))
+                {
+                    return Refuse("segment name");
+                }
+
+                foreach (var candidate in HlsNames.CandidateJobNames(audioSegment!))
+                {
+                    job = _access.FindHlsJob(candidate);
+                    if (job is not null)
+                    {
+                        break;
+                    }
+                }
+
+                break;
+
+            default: // GetHlsPlaylistLegacy
+                var playlist = Arg("playlistId");
+                if (!HlsNames.IsSafeName(playlist))
+                {
+                    return Refuse("playlist name");
+                }
+
+                job = _access.FindHlsJob(playlist!);
+                break;
+        }
+
+        if (job is null)
+        {
+            return Refuse("no running job");
+        }
+
+        // The job's own stream: tuner check for logged-in callers; anonymous may use any running job (A1).
+        var stream = _access.ClassifyJob(snapshot, job);
+        if (stream.Kind is TargetKind.Unresolved or TargetKind.Recording)
+        {
+            return Deny(context, caller, AccessDecision.DenyUnresolved, "legacy-hls", "job stream", started, 1);
+        }
+
+        if (!anonymous && AccessPolicy.DecideTarget(caller, snapshot.Map, stream, ready) is var streamDecision && streamDecision != AccessDecision.Allow)
+        {
+            return Deny(context, caller, streamDecision, "legacy-hls", "job stream", started, 1);
         }
 
         return true;

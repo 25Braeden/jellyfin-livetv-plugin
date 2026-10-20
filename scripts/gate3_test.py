@@ -342,6 +342,7 @@ def main():
 
     print("== 14. library playback and browsing still work (A, and C with no tuner)")
     lib = library_fixture.main()
+    lib_items = lib
     for who in ("A", "C"):
         api, uid, _ = n.login(who, f"gate3-lib-{who}")
         st, res = api.get(f"/Users/{uid}/Items", parentId=lib["MoviesLibrary"], recursive="true")
@@ -445,6 +446,83 @@ def main():
         time.sleep(2)
     ok, detail = plays(A5, a5u, live)
     check(".ts playback via the buffer still works (HLS segment)", ok, detail)
+
+    print("== 16. legacy HLS file routes bound to a running job (fix 5c)")
+    A6, a6u, _ = n.login("A", "gate3-A-fix5c")
+    B6, b6u, _ = n.login("B", "gate3-B-fix5c")
+
+    # A starts Live TV HLS on its own channel and keeps it running.
+    st, ms6, ps6 = n.open_channel(A6, a6u, news)
+    seg_url = None
+    try:
+        q = urllib.parse.urlencode({"mediaSourceId": ms6["Id"], "liveStreamId": ms6["LiveStreamId"], "playSessionId": ps6,
+                                    "videoCodec": "h264", "audioCodec": "aac", "segmentContainer": "ts"})
+        st, master = raw_get(A6, f"/Videos/{news}/master.m3u8?{q}")
+        sub = next((l for l in master.decode().splitlines() if l and not l.startswith("#")), None) if st == 200 else None
+        st, media = raw_get(A6, f"/Videos/{news}/{sub}", timeout=90) if sub else (st, b"")
+        segs = [l for l in media.decode().splitlines() if l and not l.startswith("#")] if st == 200 else []
+        seg_url = segs[0] if segs else None
+        check("Live TV HLS segment URLs use the legacy route (hls/...)", bool(seg_url) and seg_url.startswith("hls/"), seg_url or f"HTTP {st}")
+        if seg_url:
+            st, body = raw_get(A6, f"/Videos/{news}/{seg_url}", timeout=90)
+            check("A fetches its own live segment via the legacy route", st == 200 and body[:1] == b"G", f"HTTP {st}")
+            st, body = anon_get(f"/Videos/{news}/{seg_url}", timeout=60)
+            check("anonymous fetch of A's running live job segment = allowed (accepted A1)", st == 200 and body[:1] == b"G", f"HTTP {st}")
+            st, _ = raw_get(B6, f"/Videos/{news}/{seg_url}", timeout=30)
+            check("B (tuner2) fetching A's live job segment = 403", st == 403, f"HTTP {st}")
+            playlist, segment = seg_url.split("/")[1], seg_url.split("/")[2].split(".")[0]
+            st, _ = anon_get(f"/Videos/00000000000000000000000000000000/hls/{playlist}/{segment}.ts")
+            check("legacy segment with empty item id = 403", st == 403, f"HTTP {st}")
+            st, _ = anon_get(f"/Videos/{news}/hls/{playlist}/{playlist}.m3u8")
+            check("legacy route asking for the job's playlist file (.m3u8) = refused", st in (403, 404), f"HTTP {st}")
+            for label, path in (("../ traversal (encoded)", f"/Videos/{news}/hls/..%2F..%2Fdata/x0.ts"),
+                                ("segment with ../", f"/Videos/{news}/hls/{playlist}/..%2F{segment}.ts"),
+                                ("other job's name", f"/Videos/{news}/hls/{playlist}/{'f' * 32}0.ts")):
+                st, _ = anon_get(path)
+                check(f"legacy segment, {label} = refused", st in (400, 403, 404) and st != 200, f"HTTP {st}")
+    finally:
+        if ps6:
+            stop(A6, ms6, ps6, news)
+        time.sleep(3)
+    if seg_url:
+        st, _ = anon_get(f"/Videos/{news}/{seg_url}")
+        check("legacy segment of a finished job = 403", st == 403, f"HTTP {st}")
+
+    # The confirmed leak: the raw .ts buffer file name, read through the legacy route.
+    st, ms7, ps7 = n.open_channel(A6, a6u, live)
+    try:
+        unique = ms7["Path"].split("/LiveStreamFiles/")[1].split("/")[0] if ps7 else "x"
+        time.sleep(2)
+        st, _ = anon_get(f"/Videos/00000000000000000000000000000000/hls/{unique}/{unique}.ts")
+        check("raw .ts buffer file via legacy route (anonymous, empty item id) = 403", st == 403, f"HTTP {st}")
+        st, _ = anon_get(f"/Videos/{lib_items['Movie']}/hls/{unique}/{unique}.ts")
+        check("raw .ts buffer file via legacy route (anonymous, real item id) = 403", st == 403, f"HTTP {st}")
+        st, _ = anon_get(f"/Audio/{lib_items['Audio']}/hls/{unique}/stream.mp3")
+        check("legacy audio route for a non-job file = 403", st == 403, f"HTTP {st}")
+    finally:
+        if ps7:
+            stop(A6, ms7, ps7, live)
+        time.sleep(2)
+
+    # hls1 + a real ffmpeg transcode (forced by a low bitrate and size) still work for a library movie.
+    hls_since = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    st, info = A6.post(f"/Items/{lib_items['Movie']}/PlaybackInfo", {"UserId": a6u})
+    if st == 200:
+        q = urllib.parse.urlencode({"mediaSourceId": info["MediaSources"][0]["Id"], "playSessionId": info["PlaySessionId"],
+                                    "videoCodec": "h264", "audioCodec": "aac", "segmentContainer": "ts",
+                                    "videoBitRate": "150000", "maxWidth": "320", "audioBitRate": "64000"})
+        st, master = raw_get(A6, f"/Videos/{lib_items['Movie']}/master.m3u8?{q}")
+        sub = next((l for l in master.decode().splitlines() if l and not l.startswith("#")), None) if st == 200 else None
+        st, media = raw_get(A6, f"/Videos/{lib_items['Movie']}/{sub}", timeout=90) if sub else (st, b"")
+        segs = [l for l in media.decode().splitlines() if l and not l.startswith("#")] if st == 200 else []
+        st, seg = raw_get(A6, f"/Videos/{lib_items['Movie']}/{segs[0]}", timeout=90) if segs else (st, b"")
+        check("library HLS uses hls1 and plays (A)", bool(segs) and segs[0].startswith("hls1/") and st == 200 and seg[:1] == b"G",
+              f"{segs[0][:30] if segs else '-'} HTTP {st}")
+        A6.call("DELETE", "/Videos/ActiveEncodings", query={"deviceId": "gate3-A-fix5c", "playSessionId": info["PlaySessionId"]})
+        time.sleep(1)
+        log = subprocess.run(["docker", "logs", "--since", hls_since, "jellyfin-dev"], capture_output=True, text=True)
+        ffmpeg = [l for l in (log.stdout + log.stderr).splitlines() if "/ffmpeg" in l and "libx264" in l]
+        check("Jellyfin's own ffmpeg transcoded the movie (libx264)", bool(ffmpeg))
 
     print("== 10. logging")
     time.sleep(1)

@@ -11,6 +11,9 @@ public static class LiveTvEndpoints
     /// <summary>Controller name of Jellyfin.Api/Controllers/LiveTvController.cs.</summary>
     public const string LiveTvController = "LiveTv";
 
+    /// <summary>Controller of the legacy HLS file routes (Jellyfin.Api/Controllers/HlsSegmentController.cs).</summary>
+    public const string LegacyHlsController = "HlsSegment";
+
     /// <summary>
     /// LiveTvController actions a mapped, non-admin user may call. Everything else on LiveTvController (timers,
     /// series timers, recordings, tuner and listing-provider management, channel mappings, raw stream files) is
@@ -47,6 +50,18 @@ public static class LiveTvEndpoints
     {
         "itemId", "routeItemId", "channelId", "programId", "recordingId", "seriesId", "videoId",
         "collectionId", "streamId", "timerId",
+    };
+
+    /// <summary>
+    /// Legacy HLS actions that serve files from the transcode folder by name. Clients still use the video segment
+    /// route for live (event) playlists, whose segment URLs are "hls/{playlist}/" (DynamicHlsController.cs:1656-1662).
+    /// They are bound to a running job instead of being denied.
+    /// </summary>
+    public static readonly IReadOnlySet<string> LegacyHlsActions = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "GetHlsVideoSegmentLegacy", // GET Videos/{itemId}/hls/{playlistId}/{segmentId}.{segmentContainer} (anonymous)
+        "GetHlsAudioSegmentLegacy", // GET Audio/{itemId}/hls/{segmentId}/stream.mp3|aac (anonymous)
+        "GetHlsPlaylistLegacy",     // GET Videos/{itemId}/hls/{playlistId}/stream.m3u8 ([Authorize])
     };
 
     /// <summary>

@@ -493,3 +493,46 @@ The independent check after fix 5 found that anonymous requests bypassed the fil
 Acceptance: `gate3_test.py` 104/104 (section 15 adds anonymous stream attempts on tuner 1 and tuner 2 with and without
 `static=true`, anonymous regressions, params field 22, play session reuse, and the LiveStreamFiles buffer plus `.ts`
 playback through it).
+
+## Gate 3.5 phase 2, fix 5c: legacy HLS file routes bound to a running job (2026-10-19)
+
+The second independent check found, and I confirmed live, that `GET /Videos/{any id}/hls/{x}/{name}.ts` (no auth)
+served any file in the transcode folder by name. That includes the live `.ts` buffer `{UniqueId}.ts`
+(`LiveStream.cs:79`) and other users' HLS segments. Denying the route, as first proposed, would have broken Live TV:
+for live (event) playlists Jellyfin has ffmpeg write segment URLs as `hls/{playlist}/`
+(`DynamicHlsController.cs:1656-1662`, `HlsHelpers.cs:125-130`), which clients fetch through this legacy route. It is
+also deliberately unauthenticated because some browsers fetch segments without auth (`HlsSegmentController.cs:120-121`).
+
+**Fix (option A1, user decision).** For every non-exempt caller, logged in or anonymous, the three legacy actions
+(`GetHlsVideoSegmentLegacy`, `GetHlsAudioSegmentLegacy`, `GetHlsPlaylistLegacy`) only serve a running job's own files:
+- Route names must be plain stems (`HlsNames.IsSafeName`: 1-128 of `A-Za-z0-9-_`). ASP.NET has already URL-decoded
+  them, so path separators, `.`/`..`, encoded variants and whitespace are rejected.
+- The job is found by its **exact** playlist path `{transcode folder}/{name}.m3u8`
+  (`ITranscodeManager.GetTranscodingJob(path, Hls)`, exact match, `TranscodeManager.cs:109-115`). The segment must be
+  exactly `{name}{1-9 digits}` or `{name}-1` (fMP4 init), and the extension one of ts/mp4/m4s/aac/mp3. The audio route
+  has no playlist id, so each candidate name made by stripping 1-9 trailing digits is looked up as an exact path.
+  Nothing matches by prefix or substring.
+- The route item id must be a non-empty, resolvable item, and recordings are denied (closes the "empty id" finding).
+- Logged-in non-admins also get the tuner check on the item and on the job's live stream. No running job (finished
+  or never existed) means 403. All denials use the generic message.
+
+**Accepted risk (A1): anonymous requests for a running Live TV job's segments are allowed.** The random job name (an
+MD5) is the only secret. This is the same class of risk as the `LiveStreamFiles` buffer URL, and Chrome-style segment
+requests without auth need it. A segment can only be fetched while the job runs and only by someone who knows its
+name; no API was found that discloses another user's job name. **To tighten it later:** rewrite live playlists in the
+plugin (a result filter on `main.m3u8` / `live.m3u8`) to append a short-lived signed token (HMAC over job name + user +
+expiry) to each segment URL, and require that token on the legacy segment route; or require auth on segment requests
+once all supported clients send it (re-test the Chrome case); or enforce either at Caddy.
+
+**Other file-serving controllers, checked one by one:** Image (item images by `itemId`; anonymous reads accepted,
+logged-in requests check the route item), Trickplay (`[Authorize]`, tiles from the item's own folder; `itemId` and
+`mediaSourceId` checked), Subtitle (item subtitle file or extraction, anonymous; `routeItemId`/`itemId` checked; Live TV
+channels aren't `Video`), VideoAttachments (item attachments, anonymous; `videoId` checked), Lyrics (`[Authorize]`,
+item-based), Library `File`/`Download` (logged-in, the item's own path; route item checked), Videos static (item media
+source; route item and all arguments checked). None serves transcode-folder files by name. The only routes that do are
+the three `HlsSegment` actions above. `LiveStreamFiles`/`LiveRecordings` look streams up by id, not by file name (fix 6).
+
+Live acceptance (`gate3_test.py` section 16, 119/119): Live TV HLS uses the legacy route and plays; anonymous fetch of a
+running live job segment works (A1); B gets 403 on A's job; empty item id, `.m3u8` request, encoded traversal, a
+foreign job name, a finished job and the raw `.ts` buffer name (video and audio routes) all get 403; library HLS uses
+`hls1` and plays with a real `libx264` transcode by Jellyfin's ffmpeg.

@@ -201,11 +201,13 @@ public sealed class World
             return stream;
         };
         var (config, configFake) = Fake<IConfigurationManager>.Create();
-        configFake.Handlers["GetConfiguration"] = _ => new LiveTvOptions
-        {
-            TunerHosts = [new TunerHostInfo { Id = "host1", Type = "m3u", Url = Tuner1Url }, new TunerHostInfo { Id = "host2", Type = "m3u", Url = Tuner2Url }],
-            RecordingPath = "/recordings",
-        };
+        configFake.Handlers["GetConfiguration"] = args => (string)args[0]! == "encoding"
+            ? new MediaBrowser.Model.Configuration.EncodingOptions { TranscodingTempPath = TranscodePath }
+            : new LiveTvOptions
+            {
+                TunerHosts = [new TunerHostInfo { Id = "host1", Type = "m3u", Url = Tuner1Url }, new TunerHostInfo { Id = "host2", Type = "m3u", Url = Tuner2Url }],
+                RecordingPath = "/recordings",
+            };
         configFake.Handlers["get_CommonApplicationPaths"] = _ => paths;
 
         LibraryManager = library;
@@ -219,8 +221,13 @@ public sealed class World
         Video.RecordingsManager = recordings;
         UserManager = users;
         var (transcodes, transcodesFake) = Fake<MediaBrowser.Controller.MediaEncoding.ITranscodeManager>.Create();
-        transcodesFake.Handlers["GetTranscodingJob"] = args =>
-            args.Length == 1 && args[0] is string id && Jobs.TryGetValue(id, out var job) ? job : null;
+        transcodesFake.Handlers["GetTranscodingJob"] = args => args.Length switch
+        {
+            1 when args[0] is string id && Jobs.TryGetValue(id, out var job) => job,
+            2 when args[0] is string path => Jobs.Values.FirstOrDefault(j =>
+                string.Equals(j.Path, path, StringComparison.OrdinalIgnoreCase) && Equals(j.Type, args[1])),
+            _ => null,
+        };
         Access = new AccessService(library, mediaSources, users, config, transcodes, NullLogger<AccessService>.Instance);
         SetConfig(DefaultConfig());
     }
@@ -298,6 +305,23 @@ public sealed class World
             MediaSource = new MediaBrowser.Model.Dto.MediaSourceInfo { LiveStreamId = liveStreamId },
         };
         return id;
+    }
+
+    public const string TranscodePath = "/cache/transcodes";
+
+    /// <summary>Adds a running HLS job with playlist name <paramref name="name"/> (optionally on a live stream).</summary>
+    public string AddHlsJob(string name, string? liveStreamId)
+    {
+        var playSession = Guid.NewGuid().ToString("N");
+        Jobs[playSession] = new MediaBrowser.Controller.MediaEncoding.TranscodingJob(NullLogger<MediaBrowser.Controller.MediaEncoding.TranscodingJob>.Instance)
+        {
+            PlaySessionId = playSession,
+            Path = System.IO.Path.Combine(TranscodePath, name + ".m3u8"),
+            Type = MediaBrowser.Controller.MediaEncoding.TranscodingJobType.Hls,
+            LiveStreamId = liveStreamId,
+            MediaSource = new MediaBrowser.Model.Dto.MediaSourceInfo { LiveStreamId = liveStreamId },
+        };
+        return name;
     }
 
     /// <summary>A legacy "params" string with <paramref name="value"/> in field <paramref name="index"/>.</summary>

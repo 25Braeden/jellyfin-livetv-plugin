@@ -269,6 +269,56 @@ public class AccessService
     }
 
     /// <summary>
+    /// Finds the running HLS transcoding job whose playlist is exactly <c>{transcode folder}/{name}.m3u8</c>
+    /// (ITranscodeManager.GetTranscodingJob(path, type): exact path match, MediaBrowser.MediaEncoding/Transcoding/
+    /// TranscodeManager.cs:109-115). The name must already be validated with <see cref="HlsNames.IsSafeName"/>.
+    /// </summary>
+    /// <param name="name">The playlist name.</param>
+    /// <returns>The job, or <c>null</c> if none is running.</returns>
+    public TranscodingJob? FindHlsJob(string name)
+    {
+        try
+        {
+            var path = System.IO.Path.Combine(TranscodePath(), name + ".m3u8");
+            return _transcodeManager.GetTranscodingJob(path, TranscodingJobType.Hls);
+        }
+#pragma warning disable CA1031 // Lookup failed: treat as no job (denied).
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            _logger.LogDebug(ex, "LiveTvAccess: HLS job lookup failed");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Classifies a running transcoding job: on a live stream, that stream (and its tuner); otherwise not Live TV.
+    /// </summary>
+    /// <param name="snapshot">The snapshot this decision uses.</param>
+    /// <param name="job">The job.</param>
+    /// <returns>The classification.</returns>
+    public TargetInfo ClassifyJob(AccessSnapshot snapshot, TranscodingJob job)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        var stream = !string.IsNullOrEmpty(job.LiveStreamId) ? job.LiveStreamId : job.MediaSource?.LiveStreamId;
+        return string.IsNullOrEmpty(stream)
+            ? new TargetInfo(TargetKind.NotLiveTv, null, true)
+            : ClassifyStream(snapshot, stream, ProviderString.Classify(stream, out _));
+    }
+
+    /// <summary>
+    /// The transcode folder, as Jellyfin computes it (MediaBrowser.Common/Configuration/EncodingConfigurationExtensions.cs:29-40)
+    /// but without its side effect of creating a marker file.
+    /// </summary>
+    private string TranscodePath()
+    {
+        var configured = _configurationManager.GetConfiguration<MediaBrowser.Model.Configuration.EncodingOptions>("encoding").TranscodingTempPath;
+        return string.IsNullOrEmpty(configured)
+            ? System.IO.Path.Combine(_configurationManager.CommonApplicationPaths.CachePath, "transcodes")
+            : configured;
+    }
+
+    /// <summary>
     /// Classifies a live stream id (or other provider-prefixed string): it must be open; a tuner stream is placed on
     /// its tuner; an open stream of another provider without a tuner isn't Live TV.
     /// </summary>

@@ -14,6 +14,7 @@
 | 2026-10-19 | Gate 3.5 fix 4: native permission, unrecognized callers, one message | 3eac58b | KnownIssue 12/15 pass; 50/50 acceptance |
 | 2026-10-19 | Gate 3.5 fix 5: default-deny filter | 8bd42f7 | KnownIssue 15/15 fixed; 86/86 acceptance |
 | 2026-10-19 | Gate 3.5 fix 5b: anonymous callers, legacy params, play sessions | 82bb969 | 104/104 acceptance |
+| 2026-10-19 | Gate 3.5 fix 5c: legacy HLS routes bound to running jobs | 29124c3 | 119/119 acceptance |
 
 ## Scale test (16,000 channels), 2026-10-19
 
