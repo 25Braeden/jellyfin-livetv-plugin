@@ -21,3 +21,9 @@ obj/
 
 # Python bytecode
 __pycache__/
+
+# Release packages (scripts/package_release.sh)
+dist/
+
+# Generated review bundles (regenerate; never commit)
+review/bundle-*.txt

@@ -145,11 +145,33 @@ def plays(api, uid, cid):
         time.sleep(2)
 
 
+def fresh_guide(admin, aid, reason):
+    """Self-healing guide fixture. The XMLTV window is relative to when it is written, and Jellyfin reuses its cached
+    copy (local/cache/xmltv/{provider id}.xml) for up to 1 h (XmlTvListingsProvider.cs:30, :64-69). So: regenerate
+    the fixture (1 h back, 48 h ahead), drop the local cached copy only if it is older than the fixture, refresh the
+    guide, and report whether programmes are airing now."""
+    n.write_guide(hours_back=1, hours_ahead=48)
+    cfg = n.ok(admin.get("/System/Configuration/livetv"), "livetv config")
+    for provider in cfg.get("ListingProviders", []):
+        if provider.get("Path") == n.GUIDE_PATH_IN_CONTAINER and provider.get("Id"):
+            cached = n.ROOT / "local" / "cache" / "xmltv" / (provider["Id"] + ".xml")
+            if cached.exists() and cached.stat().st_mtime < n.GUIDE_FILE.stat().st_mtime:
+                cached.unlink()
+    result = n.run_task(admin, "RefreshGuide")
+    st, airing = admin.get("/LiveTv/Programs", userId=aid, isAiring="true", limit=1)
+    count = airing.get("TotalRecordCount", 0) if st == 200 else 0
+    check(f"guide fixture fresh ({reason}): programmes airing now", result == "Completed" and count > 0, f"refresh {result}, {count} airing")
+    return count > 0
+
+
 def main():
     since = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     admin = n.Api(n.load_api_key(), "gate3-admin")
     aid = n.admin_user_id(admin)
     tokens_used = []
+
+    print("== 0. guide fixture")
+    fresh_guide(admin, aid, "setup")
 
     print("== 1. config + tag sync")
     check("config saved via plugin API", admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", CONFIG)[0] == 204)
@@ -316,6 +338,10 @@ def main():
         set_policy("A", **old_a)
         time.sleep(2)
     check("A plays again once native Live TV is back on", plays(A, a_uid, news)[0])
+
+    # Section 13 needs a current programme on Test News: make sure the guide window still covers now.
+    if not fresh_guide(admin, aid, "before section 13"):
+        raise SystemExit("guide has no current programmes; cannot run section 13")
 
     print("== 13. default-deny (fix 5)")
     # Give A Jellyfin's own Live TV management permission, so the timer checks test the plugin, not Jellyfin.

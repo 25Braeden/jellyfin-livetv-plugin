@@ -791,3 +791,36 @@ admin-only too: plugin config (`PluginsController.cs:25`) and `GET /LiveTvAccess
 status badge render and lay out in the 10.11 dashboard theme; the user and tuner dropdowns, the datalist
 suggestions, the Add and Remove buttons, and the inline validation messages; and the `Dashboard.*` loading and
 saved-toast helpers. Worth a quick manual look in the dashboard before deploying.
+
+## Step 4: deployment runbook, packaging, cleanup (2026-10-20)
+
+- `docs/deploy.md` is the manual production runbook. It covers:
+  - a pre-flight checklist: provider connection limit and the tuner stream limit of 1, embedded credentials,
+    shortening the playlists, Refresh Guide duration, the overlap check, logo URLs, user settings, collecting tuner
+    URLs and user ids;
+  - configuring before users connect: a pre-seeded config XML with user ids (option A) or the settings page (option
+    B), since an unconfigured plugin denies non-admins;
+  - backup with Jellyfin stopped, install owned by uid 1000, the expected log lines, verification (status API, client
+    behaviour, buffer URL 403 through Caddy, hidden tuner URLs), troubleshooting by self-check problem, and quick and
+    full rollback (including removing the `livetv-*` blocked tags).
+- `scripts/m3u_overlap.py`: a standalone, stdlib-only pre-flight check for stream URLs listed by more than one
+  playlist. It never prints URLs: just `scheme://host`, the same hash as `GET /LiveTvAccess/Status` (checked:
+  `sha256:cd0a068d` for the test duplicate in both), and the channel names. Exit 0 means no overlap, 1 means overlap.
+- `scripts/package_release.sh`: builds `dist/LiveTvAccess_0.1.0.0.tar.gz` (the two DLLs and `meta.json`, with no
+  macOS metadata) and prints SHA-256 sums. `dist/` is gitignored.
+- `review/`: the two external review files are committed; generated `review/bundle-*.txt` files are ignored.
+  `review-bundle.txt` never existed, so there was nothing to delete.
+
+**Stale guide fixture (found during the final regression).** The XMLTV fixture holds programmes relative to when it is
+written (it used to cover 1 h back to 5 h ahead). After it ran out, Gate 3 section 13 found no programme.
+Regenerating the fixture alone didn't help: Jellyfin reuses its cached copy (`cache/xmltv/{provider id}.xml`) for up
+to 1 hour (`XmlTvListingsProvider.cs:30, :64-69`). The cached copy, written at 04:54Z, held programmes ending 04:00Z,
+so the 05:07Z refresh read stale data and returned 0 programmes.
+
+Fix (local test tooling only):
+- `write_guide()` now covers 1 h back to 48 h ahead.
+- Gate 3 runs `fresh_guide()` at setup and again before section 13. It regenerates the fixture, deletes the local
+  cached copy only if it is older than the fixture, refreshes the guide, and checks that programmes are airing
+  (a check, not a crash).
+
+This doesn't affect production, where the guide comes from the real provider.

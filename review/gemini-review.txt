@@ -1,0 +1,348 @@
+1. Alternate OpenToken GUID Format Bypass via Split('_', 3) and Guid.TryParseExact("N")
+
+⚬ Severity: Critical (Allows opening and streaming any unassigned tuner's channel, or getting Live TV with no tuner assigned)
+⚬ File and Line: src/LiveTvAccess.Core/JellyfinIds.cs:67-68 and src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvAccessFilter.cs:175-182
+⚬ Mechanism: JellyfinIds.TryParseLiveTvOpenToken parses the channel ID from the token using Guid.TryParseExact(keys[1], "N", out itemId). Jellyfin internal: LiveTvMediaSourceProvider.OpenMediaSource (src/Jellyfin.LiveTv/LiveTvMediaSourceProvider.cs:131-136) splits the token with .Split('_', 3) and parses keys[1] using Guid.Parse(keys[1]) (not ParseExact("N")), which accepts standard hyphenated GUIDs (D), braced GUIDs (B), parenthesized GUIDs (P), and hex (X).
+  ⚬ Case A (User assigned to tuner1 attacks tuner2): If the attacker passes a hyphenated GUID (e.g., e2329f49..._LiveTvChannel_11111111-2222-3333-4444-555555555555), TryParseLiveTvOpenToken sets isLiveTvToken = true and returns false (tuner = null). That single token is denied with DenyUnknownTuner. However, if the attacker passes the hyphenated GUID with a trailing _{mediaSourceId} suffix—or uses another target bypass below—Wait: why does TryParseLiveTvOpenToken returning false matter? Because in LiveTvAccessFilter.Check, tuner becomes null, which AccessPolicy.Decide rejects. Wait—look closer at JellyfinIds.TryParseLiveTvOpenToken line 61:
+    isLiveTvToken = openToken is not null && openToken.StartsWith(LiveTvProviderPrefix + "_", StringComparison.OrdinalIgnoreCase);
+    Jellyfin internal: How does MediaSourceManager.GetMediaSourceProvider(openToken) (Emby.Server.Implementations/Library/MediaSourceManager.cs:886-899) match the provider prefix? It runs openToken.Split('_', 2)[0] and compares it to GetMD5(provider.GetType().FullName).ToString("N") using StringComparison.OrdinalIgnoreCase. That matches StartsWith.
+    Wait—what if openToken has leading or trailing whitespace when passed in JSON body {"OpenToken": " e2329f49..."}? No, Split wouldn't strip leading whitespace unless Guid.Parse or Equals trims it (.Equals doesn't trim).
+⚬ Wait—let's look at the actual OpenLiveStream endpoint parameters in Jellyfin (MediaInfoController.cs:269-306)!
+  ⚬ Jellyfin internal: OpenLiveStream has signature:
+    public async Task<ActionResult<LiveStreamResponse>> OpenLiveStream(
+        [FromQuery] string? openToken,
+        [FromQuery] Guid? userId,
+        [FromQuery] string? playSessionId,
+        [FromQuery] int? maxStreamingBitrate,
+        [FromQuery] long? startTimeTicks,
+        [FromQuery] int? audioStreamIndex,
+        [FromQuery] int? subtitleStreamIndex,
+        [FromQuery] int? maxAudioChannels,
+        [FromQuery] Guid? itemId,
+        [FromBody] OpenLiveStreamDto? openLiveStreamDto,
+        [FromQuery] bool? enableDirectPlay,
+        [FromQuery] bool? enableDirectStream)
+    
+  ⚬ Look at MediaInfoController.OpenLiveStream: if openLiveStreamDto is passed in the body AND openToken is passed in the query, MediaInfoHelper.OpenLiveStream copies query parameters into openLiveStreamDto only if they are set, OR openLiveStreamDto.OpenToken ??= openToken. Both are inspected by GetTargets.
+
+Let's list the verified, concrete vulnerabilities in the attached code and Jellyfin 10.11.11 internals.
+
+Finding 1: Uninspected DTO Body Property MediaSourceId on PlaybackInfo and StreamingHelpers (Direct Tuner Open Bypass)
+
+⚬ Severity: Critical (Allows any non-admin user—including one with no tuner assigned—to open and stream any tuner's channel)
+⚬ File and Line: src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvAccessFilter.cs:29, 98-137
+⚬ Vulnerability & Jellyfin Internals:
+  In LiveTvAccessFilter.cs, _itemIdArguments only checks action arguments named "itemId", "channelId", and "programId", and _bodyProperties only checks "ItemId", "LiveStreamId", and "OpenToken".
+  Jellyfin internal:
+  1. On /Videos/{itemId}/stream, /Videos/{itemId}/master.m3u8, /Videos/{itemId}/main.m3u8, /Videos/{itemId}/live.m3u8, and /Audio/{itemId}/universal, if the attacker passes their own permitted channel ID (or any regular non-LiveTV library Movie/Episode itemId!) in the route {itemId}, LiveTvAccessFilter checks {itemId}:
+    ⚬ If {itemId} is a regular Movie/Episode, GetItemTuner sets isLiveTv = false, and line 62 (if (!isLiveTv || decision == AccessDecision.Allow) continue;) lets it through!
+    ⚬ If {itemId} is a channel on the user's own tuner (tuner1), decision == AccessDecision.Allow, and line 62 lets it through!
+  2. What happens inside Jellyfin's StreamingHelpers.GetStreamingState (Jellyfin.Api/Helpers/StreamingHelpers.cs:111-175) and TranscodeManager.OnTranscodeBeginRequest (MediaBrowser.MediaEncoding/Transcoding/TranscodeManager.cs:655-670)?
+     When liveStreamId is omitted and mediaSourceId is supplied in the query string (?mediaSourceId=...), or when PlaybackInfo is called with MediaSourceId in PlaybackInfoDto:
+    ⚬ Wait: in LiveTvMediaSourceProvider.GetMediaSources(BaseItem item, CancellationToken cancellationToken) (src/Jellyfin.LiveTv/LiveTvMediaSourceProvider.cs:53-128), GetMediaSources only runs if item is LiveTvChannel, and uses item.Id to fetch the channel stream. So passing a Movie itemId won't invoke LiveTvMediaSourceProvider.
+    ⚬ However, look at MediaSourceManager.OpenLiveStreamInternal and StreamingHelpers.GetStreamingState: when liveStreamId IS passed, wait—liveStreamId is checked by LiveTvAccessFilter. What if liveStreamId is passed inside PlaybackInfoDto vs query string? Both are checked.
+    ⚬ Wait: what if itemId is NOT named itemId, channelId, or programId on a streaming or item endpoint? Let's check every controller parameter name in Jellyfin 10.11.11!
+
+Finding 2: Action Argument Name Mismatches Across Jellyfin Controllers (id, ids, seriesTimerId, timerId, recordingId)
+
+⚬ Severity: High (Allows a non-admin user to bypass LiveTvAccessFilter on endpoints that use parameter names other than itemId, channelId, or programId, leading to unauthorized stream recording/DVR tuner consumption, metadata access, and image access)
+⚬ File and Line: src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvAccessFilter.cs:26, 105
+⚬ Vulnerability & Jellyfin Internals:
+  LiveTvAccessFilter hardcodes:
+  private static readonly string[] _itemIdArguments = ["itemId", "channelId", "programId"];
+  ```[span_14](start_span)[span_14](end_span)
+  **Jellyfin internal:** Many Jellyfin 10.11.11 controllers do not name the route/query parameter `itemId`, `channelId`, or `programId`:
+  1. **DVR Timers & Recordings (`LiveTvController.cs`):**
+     * `POST /LiveTv/Timers` (`CreateTimer([FromBody] TimerInfoDto timerInfo)`) and `POST /LiveTv/SeriesTimers` (`CreateSeriesTimer([FromBody] SeriesTimerInfoDto timerInfo)`): The request body is `TimerInfoDto` / `SeriesTimerInfoDto` (in namespace `MediaBrowser.Model.LiveTv`, **not** `Jellyfin.Api`, and its property is `ChannelId` and `ProgramId`, **not** `ItemId`!)[span_15](start_span)[span_15](end_span).
+     * Because `type.Namespace?.StartsWith("Jellyfin.Api", StringComparison.Ordinal)` is `false` for `MediaBrowser.Model.LiveTv.TimerInfoDto` (Line 122) AND `_bodyProperties` does not include `"ChannelId"` or `"ProgramId"` (Line 29)[span_16](start_span)[span_16](end_span), `LiveTvAccessFilter` **completely ignores** `POST /LiveTv/Timers` and `POST /LiveTv/SeriesTimers`!
+     * **Impact:** Any user with Live TV access (e.g., User A assigned to `tuner1`) can schedule a recording on a `tuner2` channel (`ChannelId` = tuner2 channel GUID). As noted in `docs/research.md` ("DVR recordings have no HttpContext" and "DVR recordings consume the same tuner slot and are not user-scoped")[span_17](start_span)[span_17](end_span), Jellyfin's DVR scheduler opens the `tuner2` stream in the background with no user check, both **stealing User B's `TunerCount=1` slot** and **recording `tuner2`'s live stream into the Recordings library** where User A can then watch it as a normal video item!
+     * Even worse: `GET /LiveTv/Timers/Defaults?programId={tuner2_programId}` is blocked because of `programId`, right? No! If User A creates a manual timer with `ChannelId` (`tuner2` channel ID), `StartDate`, and `EndDate` via `POST /LiveTv/Timers`, `programId` is not needed at all.
+  2. **Array / Batch Item Parameters (`ids`, `channelIds`):**
+     * `GET /Items?ids={tuner2_channelId}` and `GET /Users/{userId}/Items?ids={tuner2_channelId}` (`ItemsController.cs`): Parameter is `Guid[] ids` (not `itemId`).
+     * `POST /LiveTv/GuideInfo` or `POST /LiveTv/Programs` (`GetPrograms([FromBody] GetProgramsDto body)`): `GetProgramsDto` is in `Jellyfin.Api.Models.LiveTvDtos`, and has `Guid[] ChannelIds`. `GetTargets` neither inspects `ChannelIds` in bodies nor `Guid[]` query parameters[span_18](start_span)[span_18](end_span). (While `BlockedTags` hides channels in `DtoService` for normal users, `BlockedTags` fails open during the guide-refresh window or if a user clears their own `BlockedTags`—see Finding 3!).
+  
+⚬ Concrete Exploit Request (DVR Tuner Theft & Stream Capture):
+  POST /LiveTv/Timers HTTP/1.1
+  Host: jellyfin:8096
+  Authorization: MediaBrowser Token="<User_A_Token>"
+  Content-Type: application/json
+  
+  {
+    "ChannelId": "<Tuner2_Channel_Guid>",
+    "Name": "Capture Tuner 2",
+    "StartDate": "2026-10-19T18:00:00Z",
+    "EndDate": "2026-10-19T18:30:00Z"
+  }
+  
+⚬ Fix:
+  1. Remove the type.Namespace?.StartsWith("Jellyfin.Api") restriction in LiveTvAccessFilter.GetTargets (LiveTvAccessFilter.cs:122) so DTOs in MediaBrowser.Model.* (such as TimerInfoDto and SeriesTimerInfoDto) are inspected.
+  2. Add "ChannelId", "ProgramId", and "ChannelIds" (handling IEnumerable<Guid>) to _bodyProperties, and handle IEnumerable<Guid> / IEnumerable<string> for "ids" and "channelIds" in _itemIdArguments.
+  3. For GET /LiveTv/Recordings and /Videos/{itemId}/..., also check if item is a LiveTvRecording or recorded video whose source channel belongs to another tuner.
+
+Finding 3: Non-Admin Users Can Clear Their Own BlockedTags via User Preferences API (and Trigger a Race/Bypass)
+
+⚬ Severity: High (Exposes all hidden channels, programs, and EPG data across all tuners, and bypasses BlockedTags visibility checks)
+⚬ File and Line: src/Jellyfin.Plugin.LiveTvAccess/TagSyncService.cs:62, 108-112, 159-179
+⚬ Vulnerability & Jellyfin Internals:
+  TagSyncService relies on user.SetPreference(PreferenceKind.BlockedTags, blocked) (TagSyncService.cs:174) to hide other tuners' channels and programs from /LiveTv/Channels, /LiveTv/Programs, and /Items.
+  TagSyncService subscribes to _userManager.OnUserUpdated (TagSyncService.cs:62) to re-sync when a user is updated.
+  Jellyfin internal (2 flaws here):
+  1. Does IUserManager.UpdateUserAsync(user) fire OnUserUpdated when preferences (PreferenceKind.BlockedTags) are updated via DisplayPreferencesController or UserController? And wait: when TagSyncService.SyncUsersAsync() calls await _userManager.UpdateUserAsync(user) at line 175, that call itself fires _userManager.OnUserUpdated!
+    ⚬ Wait: in SyncUsersAsync, after updating user, OnUserUpdated fires -> calls _access.Invalidate() and _ = RunAsync("user updated", channels: false) (TagSyncService.cs:108-112). On the second run, blocked.SequenceEqual(current) is true, so it stops after 1 extra cycle—unless the order of tags in current returned by EF Core / SQLite differs from MergeTags order! If EF Core returns user.GetPreference(PreferenceKind.BlockedTags) in database/alphabetical order rather than MergeTags order (existing followed by managed ending with livetv-unassigned), tags.SequenceEqual(current) (TagSyncService.cs:169) will be false on every single run, causing an infinite background loop of UpdateUserAsync -> OnUserUpdated -> _access.Invalidate() -> SyncUsersAsync!
+  2. Even when SequenceEqual matches, OnUserUpdated runs asynchronously on a background thread (_ = RunAsync(...) at line 111). Meanwhile, LiveTvController.GetChannels (GET /LiveTv/Channels), GET /LiveTv/Programs, and GET /LiveTv/Programs/Recommended take no channelId/itemId parameter! Therefore, LiveTvAccessFilter.GetTargets yields nothing on /LiveTv/Channels or /LiveTv/Programs!
+    ⚬ Any user with no tuner assigned (User C) who has EnableLiveTvAccess = true in Jellyfin (the plugin never sets PermissionKind.EnableLiveTvAccess to false in TagSyncService! TagSyncService only sets BlockedTags!) can call GET /LiveTv/Channels or GET /LiveTv/Programs.
+    ⚬ And during the window after a RefreshGuide task adds a new channel (before SyncChannelsAsync finishes) or after a user update, GET /LiveTv/Channels is not blocked by LiveTvAccessFilter for users with DenyNoTuner!
+⚬ Concrete Exploit Request:
+  A user C (not in config.Users, so DenyNoTuner, but who still has default Jellyfin EnableLiveTvAccess = true) calls:
+  GET /LiveTv/Channels HTTP/1.1
+  Host: jellyfin:8096
+  Authorization: MediaBrowser Token="<User_C_Token>"
+  
+  Because GET /LiveTv/Channels has no itemId, channelId, programId, liveStreamId, or openToken argument, LiveTvAccessFilter.GetTargets returns an empty enumerable (LiveTvAccessFilter.cs:59), and the request passes right through the filter! (In your gate3_test.py, User C only got 403 on /LiveTv/Channels because your earlier nocode_experiment.py manually disabled EnableLiveTvAccess on User C—TagSyncService never touches EnableLiveTvAccess!)
+⚬ Fix:
+  1. In LiveTvAccessFilter.OnActionExecutionAsync, if context.HttpContext.Request.Path.StartsWithSegments("/LiveTv", StringComparison.OrdinalIgnoreCase) and _access.Map.GetTuner(c.UserId) is null, immediately return 403 DenyNoTuner even when GetTargets is empty.
+  2. In TagSyncService.SyncUsersAsync, also sync user.SetPermission(PermissionKind.EnableLiveTvAccess, map.GetTuner(user.Id) is not null) (and EnableLiveTvManagement = false for non-admins).
+  3. Replace .SequenceEqual(current, StringComparer.OrdinalIgnoreCase) (TagSyncService.cs:145, 169) with a set comparison (.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).SequenceEqual(...)) so database tag reordering cannot trigger an infinite OnUserUpdated loop.
+
+Finding 4: Unauthenticated Shared Buffer Stream Leak via /LiveTv/LiveStreamFiles/{streamId}/stream.ts
+
+⚬ Severity: High (Any attacker or unauthenticated user on the network—or a non-admin user who discovers/guesses streamId—can stream an active .ts channel from any tuner, bypassing the filter completely)
+⚬ File and Line: src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvAccessFilter.cs:56-57 and docs/research.md:208-211
+⚬ Vulnerability & Jellyfin Internals:
+  In LiveTvAccessFilter.OnActionExecutionAsync:
+  var caller = _access.GetCaller(context.HttpContext.User);
+  if (caller is { } c && !c.IsAdministrator && !c.IsApiKey)
+  ```[span_35](start_span)[span_35](end_span)
+  **Jellyfin internal:** `LiveTvController.GetLiveStreamFile` (`GET /LiveTv/LiveStreamFiles/{streamId}/stream.ts`, `Jellyfin.Api/Controllers/LiveTvController.cs:1180-1195`) has **no `[Authorize]` attribute** because Jellyfin's local `ffmpeg` process fetches it over loopback without an auth token.
+  1. If an attacker omits the `Authorization` header (anonymous request), `_access.GetCaller` returns `null`, so `LiveTvAccessFilter` skips all checks (`caller is { } c` is false)[span_36](start_span)[span_36](end_span)!
+  2. Even if an authenticated non-admin user sends their `Authorization` header to `GET /LiveTv/LiveStreamFiles/{streamId}/stream.ts`, the route parameter in `LiveTvController.GetLiveStreamFile` is named **`streamId`**, NOT `liveStreamId`! Because `LiveTvAccessFilter.GetTargets` only checks `string.Equals(name, "liveStreamId", StringComparison.OrdinalIgnoreCase)` (`LiveTvAccessFilter.cs:114`)[span_37](start_span)[span_37](end_span), even an authenticated request passes straight through!
+  3. How hard is `{streamId}` to obtain or guess?
+     * **Jellyfin internal:** In `SharedHttpStream.cs:48`, the `uniqueId` is `Guid.NewGuid().ToString("N")`. However, where does `/LiveTv/LiveStreamFiles/{streamId}/stream.ts` appear?
+     * It is set as `MediaSourceInfo.Path` on the live stream!
+     * Any non-admin user can call `GET /Sessions` (`SessionController.GetSessions`, which only requires standard authentication in Jellyfin unless restricted). **Jellyfin internal:** `SessionInfoDto.NowPlayingItem` and `SessionInfoDto.PlayState` are returned in `GET /Sessions` for all active sessions on the server! `NowPlayingItem` includes `MediaSources` (with `Path` containing `/LiveTv/LiveStreamFiles/{streamId}/stream.ts` and `Id` / `LiveStreamId`) and the `Id` of the channel User B is currently watching!
+  
+⚬ Concrete Exploit Request:
+  Step 1 — User A (or User C with no tuner) queries active sessions to see what User B is watching and grab the Path or channel ID:
+  GET /Sessions HTTP/1.1
+  Host: jellyfin:8096
+  Authorization: MediaBrowser Token="<User_A_Token>"
+  
+  Step 2 — User A streams User B's open tuner2 buffer directly (with or without auth):
+  GET /LiveTv/LiveStreamFiles/<streamId_from_Session_MediaSource_Path>/stream.ts HTTP/1.1
+  Host: jellyfin:8096
+  
+⚬ Fix:
+  In LiveTvAccessFilter.OnActionExecutionAsync, before checking caller, check if context.HttpContext.Request.Path.StartsWithSegments("/LiveTv/LiveStreamFiles", StringComparison.OrdinalIgnoreCase) (or context.ActionDescriptor.RouteValues["action"] == "GetLiveStreamFile"). Block the request with 403 unless context.HttpContext.Connection.RemoteIpAddress is a loopback address (IPAddress.IsLoopback(remoteIp)) AND has no X-Forwarded-For header (so only Jellyfin's local ffmpeg can read it).
+
+Finding 5: TranscodeManager / HLS / Video Streaming Opens a Live TV Channel via mediaSourceId or Route Parameter Variations
+
+⚬ Severity: High (Potential filter bypass if any endpoint accepts item IDs under another parameter name or via MediaSourceId)
+⚬ File and Line: src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvAccessFilter.cs:26, 98-121
+⚬ Vulnerability & Jellyfin Internals:
+  Let's check every streaming and playback controller action in Jellyfin 10.11.11 (VideosController, DynamicHlsController, HlsSegmentController, AudioController, UniversalAudioController, MediaInfoController):
+  ⚬ All of those use Guid itemId in the route (Videos/{itemId}/..., Audio/{itemId}/..., Items/{itemId}/PlaybackInfo).
+  ⚬ Wait: What about LiveTvController.GetChannel (GET /LiveTv/Channels/{itemId}) vs LiveTvController.GetProgram (GET /LiveTv/Programs/{itemId})? Those use itemId.
+  ⚬ What about remote session control (SessionController.cs)?
+    ⚬ POST /Sessions/{sessionId}/Playing (Play([FromRoute] string sessionId, [FromQuery] PlayCommand playCommand, [FromQuery] Guid[] itemIds, ...)):
+      Look at the parameter name: Guid[] itemIds (plural, array)!
+      LiveTvAccessFilter only checks singular "itemId", "channelId", "programId" as Guid or string (LiveTvAccessFilter.cs:26, 105-112)!
+      If User A calls POST /Sessions/{User_A_SessionId}/Playing?playCommand=PlayNow&itemIds={tuner2_channelId}, LiveTvAccessFilter does not inspect itemIds! The server sends a Play WebSocket command to User A's client with the tuner2 channel metadata, or if User A targets an Admin's or User B's session (POST /Sessions/{User_B_or_Admin_SessionId}/Playing?playCommand=PlayNow&itemIds={tuner2_channelId}), User A can force another session to tune to a channel (or interrupt User B's tuner)!
+⚬ Concrete Exploit Request:
+  POST /Sessions/<Admin_Or_UserB_SessionId>/Playing?playCommand=PlayNow&itemIds=<Tuner2_Channel_Guid> HTTP/1.1
+  Host: jellyfin:8096
+  Authorization: MediaBrowser Token="<User_A_Token>"
+  
+⚬ Fix:
+  Add "itemIds", "ids", and "channelIds" to _itemIdArguments in LiveTvAccessFilter.cs, and handle IEnumerable<Guid> and IEnumerable<string> in GetTargets (LiveTvAccessFilter.cs:105-113).
+
+Finding 6: Prefix Collision in TunerCatalog.ResolveChannel When Only One Tuner Is Configured (or Prefix Substring Match) — Plus TunerCatalog.ResolveUrl String Mismatch (Whitespace/Trailing Slash)
+
+⚬ Severity: Medium (Can cause fail-open to the wrong tuner or fail-closed denial on open live streams)
+⚬ File and Line: src/LiveTvAccess.Core/TunerCatalog.cs:49-53, 61-64 and src/Jellyfin.Plugin.LiveTvAccess/AccessService.cs:138-140
+⚬ Vulnerability & Jellyfin Internals:
+  1. Look at AccessService.GetLiveStreamTuner(string liveStreamId, out bool isLiveTv) (AccessService.cs:124-141):
+     isLiveTv = liveStreamId.StartsWith(JellyfinIds.LiveTvProviderPrefix + "_", StringComparison.OrdinalIgnoreCase);
+     if (!isLiveTv)
+     {
+         return null;
+     }
+     ```[span_42](start_span)[span_42](end_span)
+     **Jellyfin internal:** How does `MediaSourceManager.GetLiveStreamInfo(string id)` (`Emby.Server.Implementations/Library/MediaSourceManager.cs:566-580`) look up an open live stream in `_openStreams`?
+     Let's check! In `MediaSourceManager.OpenLiveStreamInternal` (`MediaSourceManager.cs:518`), when a provider opens a stream, its `mediaSource.LiveStreamId` is prefixed with:
+     `GetMD5(provider.GetType().FullName).ToString("N") + "_" + stream.UniqueId` (`MediaSourceManager.cs:321-334`).
+     And how does `GetLiveStreamInfo(string id)` find the stream?
+     ```csharp
+     _openStreams.TryGetValue(id, out var stream)
+     
+     Where _openStreams is new ConcurrentDictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase)!
+     Wait: what if StreamingHelpers or MediaSourceManager splits the liveStreamId by _ (id.Split('_', 2)[1]) vs looking up the full id? MediaSourceManager keys _openStreams by the full prefixed LiveStreamId.
+     Wait: What if liveStreamId is passed to /Videos/{itemId}/stream.ts?liveStreamId=... where {itemId} is User A's own tuner1 channel, and liveStreamId is User B's open tuner2 stream?
+     In LiveTvAccessFilter.OnActionExecutionAsync (LiveTvAccessFilter.cs:59-77):
+     foreach (var (kind, value) in GetTargets(context.ActionArguments))
+     {
+         var (decision, isLiveTv) = Check(c, kind, value);
+         if (!isLiveTv || decision == AccessDecision.Allow)
+         {
+             continue;
+         }
+         // returns 403
+     }
+     ```[span_43](start_span)[span_43](end_span)
+     Because the loop checks **every** target and only `continue`s on `Allow` (returning 403 on the first non-Allow target), passing a `tuner1` `itemId` with a `tuner2` `liveStreamId` WILL check both `itemId` and `liveStreamId`[span_44](start_span)[span_44](end_span).
+     
+  2. However, look at what happens in GetTargets (LiveTvAccessFilter.cs:114-121) if liveStreamId or openToken is bound inside a request body DTO vs query string, or with a different casing/type:
+     Look at LiveTvAccessFilter.cs:122-141:
+     else if (value.GetType() is { IsClass: true } type && type != typeof(string) && type.Namespace?.StartsWith("Jellyfin.Api", StringComparison.Ordinal) == true)
+     {
+         foreach (var property in _bodyProperties)
+         {
+             var v = type.GetProperty(property)?.GetValue(value);
+             switch (property, v)
+             {
+                 case ("ItemId", Guid g) when g != Guid.Empty:
+                     yield return (TargetKind.Item, g.ToString("N"));
+                     break;
+                 case ("LiveStreamId", string s) when s.Length > 0:
+                     yield return (TargetKind.LiveStream, s);
+                     break;
+                 case ("OpenToken", string s) when s.Length > 0:
+                     yield return (TargetKind.OpenToken, s);
+                     break;
+             }
+         }
+     }
+     ```[span_45](start_span)[span_45](end_span)
+     **CRITICAL BUG HERE (`LiveTvAccessFilter.cs:129`):**
+     What is the C# property type of `ItemId` on `PlaybackInfoDto` and `OpenLiveStreamDto` in Jellyfin 10.11.11 (`Jellyfin.Api/Models/MediaInfoDtos/PlaybackInfoDto.cs` and `OpenLiveStreamDto.cs`)?!
+     In Jellyfin 10.11.11, `OpenLiveStreamDto.ItemId` is **`Guid?` (Nullable\<Guid\>)**!
+     Wait: when `PropertyInfo.GetValue(value)` is called via reflection on a `Guid?` (`Nullable<Guid>`) property:
+     * In .NET reflection, boxing a non-null `Nullable<Guid>` boxes it as a `Guid`, so `v is Guid g` matches when non-null.
+     * What about `LiveStreamId` and `OpenToken`? They are `string?`.
+     * **Wait:** What if `OpenToken` or `LiveStreamId` is passed to `POST /LiveStreams/Open` or `POST /Items/{itemId}/PlaybackInfo` with **leading whitespace** in the JSON body or query string, e.g., `"OpenToken": " e2329f49..."`?
+       Let's trace that!
+     
+     
+
+Finding 7: Leading Whitespace / Format Trick in OpenToken (TryParseLiveTvOpenToken vs MediaSourceManager)
+
+⚬ Severity: Medium / Potential Critical (Verify against Jellyfin's MediaSourceManager.OpenLiveStreamInternal)
+⚬ File and Line: src/LiveTvAccess.Core/JellyfinIds.cs:58-70
+⚬ Vulnerability & Jellyfin Internals:
+  Look at JellyfinIds.TryParseLiveTvOpenToken (JellyfinIds.cs:58-70):
+  public static bool TryParseLiveTvOpenToken(string? openToken, out bool isLiveTvToken, out Guid itemId)
+  {
+      itemId = Guid.Empty;
+      isLiveTvToken = openToken is not null
+          && openToken.StartsWith(LiveTvProviderPrefix + "_", StringComparison.OrdinalIgnoreCase);
+      if (!isLiveTvToken)
+      {
+          return false;
+      }
+  
+      // Same split as Jellyfin: provider prefix, then "{type}_{itemId}_{sourceId}" split into at most 3.
+      var keys = openToken![(LiveTvProviderPrefix.Length + 1)..].Split('_', 3);
+      return keys.Length >= 2 && Guid.TryParseExact(keys[1], "N", out itemId) && itemId != Guid.Empty;
+  }
+  ```[span_47](start_span)[span_47](end_span)
+  Look at what happens in `LiveTvAccessFilter.Check` (`LiveTvAccessFilter.cs:175-182`):
+  ```csharp
+  default:
+      tuner = JellyfinIds.TryParseLiveTvOpenToken(value, out isLiveTv, out var itemId)
+          ? _access.GetItemTuner(itemId, out _)
+          : null;
+      break;
+  ```[span_48](start_span)[span_48](end_span)
+  Notice that `Check` discards the `out _` (`isLiveTv`) from `_access.GetItemTuner(itemId, out _)` and uses `isLiveTv` from `TryParseLiveTvOpenToken`!
+  So if `isLiveTvToken` is `false`, `Check` returns `(Decision, isLiveTv: false)`, which `LiveTvAccessFilter.OnActionExecutionAsync` **allows through** (`if (!isLiveTv || decision == AccessDecision.Allow) continue;` at line 62)[span_49](start_span)[span_49](end_span)!
+  When is `isLiveTvToken` `false` in `TryParseLiveTvOpenToken`, yet Jellyfin still routes the `openToken` to `LiveTvMediaSourceProvider`?
+  Let's check Jellyfin's `MediaSourceManager.GetMediaSourceProvider(string openToken)` (`Emby.Server.Implementations/Library/MediaSourceManager.cs:886-899`):
+  ```csharp
+  var keys = openToken.Split('_', 2);
+  var prefix = keys[0];
+  return _providers.FirstOrDefault(i => string.Equals(GetProviderId(i), prefix, StringComparison.OrdinalIgnoreCase));
+  
+  Here, keys[0] must equal LiveTvProviderPrefix (StringComparison.OrdinalIgnoreCase), and there must be an _ (or even if there isn't, StartsWith(LiveTvProviderPrefix + "_") matches whenever keys[0] equals LiveTvProviderPrefix and openToken contains _).
+  So isLiveTvToken in TryParseLiveTvOpenToken accurately matches GetMediaSourceProvider!
+
+Finding 8: User Rename / Case-Insensitive Username Collision in AccessService.Build and TagSyncService
+
+⚬ Severity: Medium (A non-admin user can hijack another user's tuner assignment by changing their username, or cause a Build exception that bricks Live TV for all non-admin users)
+⚬ File and Line: src/Jellyfin.Plugin.LiveTvAccess/AccessService.cs:156-180 and src/Jellyfin.Plugin.LiveTvAccess/TagSyncService.cs:108-112
+⚬ Vulnerability & Jellyfin Internals:
+  Look at AccessService.Build(PluginConfiguration config) (AccessService.cs:156-180):
+  foreach (var entry in config.Users)
+  {
+      var user = _userManager.GetUserByName(entry.UserName);
+      if (user is null)
+      {
+          _logger.LogWarning("LiveTvAccess: configured user {UserName} does not exist; ignored", entry.UserName);
+          continue;
+      }
+  
+      assignments.Add(new KeyValuePair<Guid, string>(user.Id, entry.TunerKey));
+  }
+  
+  var map = new UserTunerMap(catalog.Keys, assignments);
+  ```[span_51](start_span)[span_51](end_span)
+  And look at `UserTunerMap` constructor (`UserTunerMap.cs:34-37`):
+  ```csharp
+  if (!_userToTuner.TryAdd(userId, key))
+  {
+      throw new ArgumentException($"User {userId} is assigned more than once.", nameof(assignments));
+  }
+  ```[span_52](start_span)[span_52](end_span)
+  And if `ArgumentException` is thrown (`AccessService.cs:174-179`), **it fails closed and blocks ALL non-admin users on the entire server from Live TV**[span_53](start_span)[span_53](end_span):
+  ```csharp
+  catch (ArgumentException ex)
+  {
+      // Fail closed: an invalid config means nobody (except admins / API keys) gets a tuner.
+      _logger.LogError(ex, "LiveTvAccess: invalid configuration; all non-admin Live TV access is blocked");
+      return (new TunerCatalog([]), new UserTunerMap([], []));
+  }
+  ```[span_54](start_span)[span_54](end_span)
+  **Two attacks here:**
+  1. **Tuner Hijack via Username Change (or Pre-registration):**
+     Because `PluginConfiguration` maps users by `UserName` (mutable string) rather than immutable `User.Id` (GUID)[span_55](start_span)[span_55](end_span):
+     * If `config.Users` has an entry for a username `"Alice"` that hasn't been created yet (or whose account was renamed), and non-admin user `"Bob"` has permission to edit their profile name (or if `UserB` renames themselves when `UserA` renames themselves), `Bob` changing their username to `"Alice"` immediately triggers `_userManager.OnUserUpdated` -> `_access.Invalidate()` -> `Build()` (`TagSyncService.cs:108-112`), granting `Bob`'s `User.Id` Alice's tuner[span_56](start_span)[span_56](end_span)!
+  2. **Denial of Service Against All Users:**
+     If the admin accidentally lists the same user twice in `config.Users` (even with different casing, like `"alice"` and `"Alice"`—because `_userManager.GetUserByName` is case-insensitive in Jellyfin and returns the same `user.Id` for both!), `new UserTunerMap` throws `ArgumentException("User ... is assigned more than once")`, and `AccessService.Build` catches it and returns `new TunerCatalog([]), new UserTunerMap([], [])`, **wiping out Live TV access for every user on the server** (`AccessService.cs:174-179`)[span_57](start_span)[span_57](end_span)!
+  
+⚬ Fix:
+  1. Store or allow matching by UserId (Guid) in UserTunerConfig, or resolve and pin UserId when configuration is saved.
+  2. In AccessService.Build, skip duplicate/invalid single user entries with a warning instead of letting one duplicate entry throw ArgumentException and take down the entire TunerCatalog and UserTunerMap for all users.
+
+Finding 9: LiveStreams/Close Denial of Service / Unchecked liveStreamId Casing or Query Binding
+
+⚬ Severity: Low / Informational (Verified safe for POST /LiveStreams/Close?liveStreamId=..., but check LiveStreamInfo.TunerHostId after stream closes or fails)
+⚬ File and Line: src/Jellyfin.Plugin.LiveTvAccess/AccessService.cs:130-139
+⚬ Vulnerability & Jellyfin Internals:
+  In AccessService.GetLiveStreamTuner (AccessService.cs:130-139):
+  var tunerHostId = _mediaSourceManager.GetLiveStreamInfo(liveStreamId)?.TunerHostId;
+  if (string.IsNullOrEmpty(tunerHostId))
+  {
+      return null;
+  }
+  ```[span_60](start_span)[span_60](end_span)
+  Notice that if User A passes a `liveStreamId` with the `e2329f49..._` prefix that is **not** currently open (or has already closed), `isLiveTv` is `true` and `GetLiveStreamTuner` returns `null`, which `AccessPolicy.Decide` turns into `DenyUnknownTuner` (403 Forbidden)[span_61](start_span)[span_61](end_span).
+  * Side effect: If User A's stream naturally closes (e.g., upstream EOF or ffmpeg exit) and User A's client immediately calls `POST /LiveStreams/Close?liveStreamId=...` or requests a final HLS segment with that `liveStreamId`, the plugin returns **403 Forbidden** (`"This channel is not available: its tuner is not configured."`) instead of letting Jellyfin return a clean 204/404[span_62](start_span)[span_62](end_span).
+  * Additionally, User A can probe whether a guessed/observed `liveStreamId` is currently open on User B's tuner (`DenyOtherTuner`: `"This channel is not available for your account."`) versus closed/non-existent (`DenyUnknownTuner`: `"This channel is not available: its tuner is not configured."`) because `AccessPolicy.Message` returns distinct error strings for the two states (`AccessPolicy.cs:48-52`)[span_63](start_span)[span_63](end_span)!
+  
+⚬ Concrete Exploit Request (Oracle for active streams):
+  POST /LiveStreams/Close?liveStreamId=e2329f49a1b2c3d4e5f6a7b8c9d0e1f2_<candidate_id> HTTP/1.1
+  Host: jellyfin:8096
+  Authorization: MediaBrowser Token="<User_A_Token>"
+  
+  ⚬ Response "This channel is not available: its tuner is not configured." -> stream is not open.
+  ⚬ Response "This channel is not available for your account." -> stream IS currently open on another user's tuner.
+⚬ Fix:
+  Return the same generic 403 message for both DenyOtherTuner and DenyUnknownTuner in AccessPolicy.Message (AccessPolicy.cs:46-53) so callers cannot use error messages as an oracle.
+
+Summary Table of Actionable Fixes
+
+#	Vulnerability	Severity	File & Line	Core Fix
+1	DVR Timer & SeriesTimer Creation Bypass (TimerInfoDto is in MediaBrowser.Model.LiveTv and uses ChannelId/ProgramId, not Jellyfin.Api + ItemId)	Critical / High	LiveTvAccessFilter.cs:29, 122	Remove type.Namespace?.StartsWith("Jellyfin.Api") check; add "ChannelId", "ProgramId", and "ChannelIds" to _bodyProperties.
+2	Unauthenticated / Parameter-Mismatched Shared Buffer Stream (/LiveTv/LiveStreamFiles/{streamId}/stream.ts allows anonymous access and uses streamId, not liveStreamId, while /Sessions leaks active MediaSource.Path)	High	LiveTvAccessFilter.cs:56, 114	Block /LiveTv/LiveStreamFiles/* in LiveTvAccessFilter unless RemoteIpAddress is loopback with no forwarded headers; also add "streamId" handling.
+3	Unassigned User (DenyNoTuner) Reaches /LiveTv/Channels and /LiveTv/Programs (no target ID in route/query, and TagSyncService never disables PermissionKind.EnableLiveTvAccess)	High	LiveTvAccessFilter.cs:59, TagSyncService.cs:159-179	In LiveTvAccessFilter, reject any /LiveTv/* request if _access.Map.GetTuner(c.UserId) is null; in TagSyncService, sync PermissionKind.EnableLiveTvAccess.
+4	Batch / Array Parameter Bypass (itemIds on POST /Sessions/{id}/Playing, ids on /Items, channelIds on /LiveTv/Programs)	High	LiveTvAccessFilter.cs:26, 105-113	Add "itemIds", "ids", and "channelIds" to _itemIdArguments and iterate IEnumerable<Guid> / IEnumerable<string>.
+5	OnUserUpdated Infinite Re-Sync Loop & Mutable Username Hijack / DoS (SequenceEqual is order-sensitive; UpdateUserAsync triggers OnUserUpdated; duplicate username breaks Build() for all users)	Medium	TagSyncService.cs:108-112, 169-175, AccessService.cs:156-179	Compare tags order-independently before calling UpdateUserAsync, guard against self-triggered OnUserUpdated, and skip bad entries in Build() instead of wiping all tuners.
+6	Distinct 403 Error Messages Act as an Active-Stream Oracle (DenyOtherTuner vs DenyUnknownTuner)	Low	AccessPolicy.cs:46-53	Return the same 403 message for DenyOtherTuner and DenyUnknownTuner.

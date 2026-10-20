@@ -148,8 +148,9 @@ def run_task(admin, key, timeout_s=1800):
     return "timeout"
 
 
-def write_guide():
-    """Hourly programs from 1h ago to +5h for every tvg-id in the fixtures."""
+def write_guide(hours_back=1, hours_ahead=48):
+    """Hourly programs from `hours_back` before the current hour to `hours_ahead` after now, for every tvg-id in the
+    fixtures. The window is relative to when it is written, so callers regenerate it before use (gate3 does)."""
     ids = []
     for tuner in TUNERS:
         for line in tuner_file(tuner).read_text().splitlines():
@@ -157,12 +158,12 @@ def write_guide():
                 tid = line.split('tvg-id="', 1)[1].split('"', 1)[0]
                 if tid not in ids:
                     ids.append(tid)
-    start = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0) - dt.timedelta(hours=1)
+    start = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0) - dt.timedelta(hours=hours_back)
     fmt = lambda t: t.strftime("%Y%m%d%H%M%S +0000")
     parts = ['<?xml version="1.0" encoding="UTF-8"?>', "<tv>"]
     parts += [f'  <channel id="{c}"><display-name>{c}</display-name></channel>' for c in ids]
     for c in ids:
-        for h in range(6):
+        for h in range(hours_back + hours_ahead + 1):
             s = start + dt.timedelta(hours=h)
             parts.append(f'  <programme start="{fmt(s)}" stop="{fmt(s + dt.timedelta(hours=1))}" channel="{c}">'
                          f'<title>{c} show {h}</title></programme>')

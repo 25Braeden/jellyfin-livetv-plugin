@@ -1,0 +1,114 @@
+I would not consider this reliably fail-closed yet. The main gaps are unrecognized callers/targets bypassing the filter, visibility during synchronization, and mixing configuration versions.
+
+This is a static review. Line numbers restart at each file’s first `using` or `namespace` in the bundle. Plugin filenames below are under `src/Jellyfin.Plugin.LiveTvAccess/`; core filenames are under `src/LiveTvAccess.Core/`. I could not retrieve the pinned Jellyfin source. **“Notes-dependent” means I’m relying on your attached research, not independently verified Jellyfin internals.** I did not run the reported acceptance tests.
+
+1. **High — Unrecognized authenticated callers bypass enforcement.**  
+   **Location:** `AccessService.cs:88–97`; `Filters/LiveTvAccessFilter.cs:61–83`.  
+   **Trigger:** Jellyfin changes its user-ID claim name/format, or an authenticated principal otherwise lacks the expected claim. `GetCaller()` returns `null`, and the filter proceeds as though the request were anonymous.  
+   **Fix:** Distinguish anonymous, recognized, and authenticated-but-unrecognized callers. Deny the last category on protected endpoints. Claim extraction failure must not disable enforcement.
+
+2. **High — A provider-prefix change fails open for stream IDs and open tokens.**  
+   **Location:** `Core/JellyfinIds.cs:17–22,58–70`; `AccessService.cs:129–133`; `Filters/LiveTvAccessFilter.cs:67,180–192`.  
+   **Trigger:** Jellyfin changes the provider type name, hashing, or prefixing scheme. Both parsers report `isLiveTv=false`; the filter ignores the denial and continues. `/LiveStreams/Open` is especially exposed when its only useful identifier is the token.  
+   **Fix:** Classify sensitive operations independently of successfully parsing the identifier. An unknown token on a stream-opening endpoint must require a positively recognized, permitted provider—not automatically pass.  
+   **Distinction:** Changing only the M3U `ExternalId` scheme generally **denies** recognized channel objects because tuner resolution returns `null`. It is the stream/token *classification* failure that opens this hole.
+
+3. **High — Target extraction can silently stop checking request bodies.**  
+   **Location:** `Filters/LiveTvAccessFilter.cs:100–147`.  
+   **Trigger:** `OpenLiveStreamDto` moves outside a `Jellyfin.Api…` namespace, becomes a different shape, renames properties, nests them, or changes `ItemId` to a string. Extraction yields nothing and the action runs. Renamed action parameters have the same problem.  
+   **Fix:** Validate and cache explicit readers for the actual endpoint parameter types. For an operation that requires a target, extraction failure should produce a controlled rejection.  
+   A **route-template rename alone does not break this implementation**: templates are currently used only for logging. Parameter names and binding shapes matter. Also, a non-null `Guid?` boxes as `Guid`, so nullable GUID properties already work.
+
+4. **High — Channel visibility is temporarily allow-by-default.**  
+   **Location:** `TagSyncService.cs:65–73,92–103,135–178`.  
+   **Trigger:** Startup before synchronization completes; a refresh creates channels; or configuration introduces a new tag. New/retagged channels can lack a tag that users currently block. Channel synchronization runs before user synchronization, so introducing a new tuner tag can expose those channels throughout the sweep.  
+   **Impact:** Channel/guide visibility can leak even while playback checks still deny access. With 16,000 changes, the window need not be “seconds.”  
+   **Fix:** Enforce visibility at query time, or establish deny-by-default quarantine before channels become queryable and update user restrictions before publishing new tags. An after-refresh repair cannot by itself guarantee continuous isolation.  
+   **Notes-dependent:** Your notes explicitly report new-channel visibility during refresh.
+
+5. **High — One decision can combine an old catalog with a new user map.**  
+   **Location:** `AccessService.cs:61–66,106–118,146–150`; `Filters/LiveTvAccessFilter.cs:178–192`; `TagSyncService.cs:137,164`.  
+   **Trigger:** A configuration change lands between tuner resolution and `_access.Map`. For example, key `tuner1` moves from URL A to URL B: an old-catalog result for A can be accepted using a new map assigning the caller to `tuner1`. A long synchronization can likewise tag using the old catalog, then update users using the new map.  
+   **Fix:** Capture one immutable, versioned `(Catalog, Map)` snapshot for the entire decision or synchronization. Discard/restart obsolete synchronization before publishing its results. The lock protects individual cache accesses, not this larger operation.
+
+6. **High — Username mapping can transfer access to a different account.**  
+   **Location:** `AccessService.cs:160–169`; `Configuration/UserTunerConfig.cs:8–16`; `TagSyncService.cs:65–69,106–109`.  
+   **Trigger:** A mapped user is renamed or deleted, then another account takes that username. The next rebuild assigns the configured tuner to the new account. A renamed user normally loses the assignment after invalidation.  
+   **Additional gap:** Only `OnUserUpdated` is subscribed; there is no explicit creation/deletion handling. Consequently, freshness and initial `BlockedTags` depend on whether those operations also emit that event—**not verified here**.  
+   **Fix:** Persist user GUIDs, retain usernames only for display, and handle creation/deletion explicitly. Do not automatically transfer assignments by name reuse.
+
+7. **High — The filter does not honor native Live TV disablement.**  
+   **Location:** `AccessService.cs:95–97`; `Core/AccessPolicy.cs:26–39`.  
+   **Trigger:** A user remains mapped to a tuner but an administrator disables that user’s native Live TV permission. The plugin still allows the mapped tuner.  
+   **Fix:** Include native Live TV permission in playback admission, rather than assuming the destination controller enforces it.  
+   **Notes-dependent:** Your experiments report that PlaybackInfo and LiveStreams/Open can open streams for users with native Live TV access disabled. I have not independently verified those controller paths.
+
+8. **High — The shared-buffer endpoint remains outside this boundary.**  
+   **Location:** `Filters/LiveTvAccessFilter.cs:60–64,100–147`; `docs/research.md:268–270`.  
+   **Trigger:** Someone obtains `/LiveTv/LiveStreamFiles/{uniqueId}/stream.ts`. Anonymous callers are skipped, and `uniqueId` is not an extracted target for authenticated callers either.  
+   **Fix:** Resolve this endpoint’s identifier to its stream/tuner and authorize external access, while preserving the server’s internal consumer path. Alternatively, enforce a verified internal-only network boundary around this endpoint.  
+   **Notes-dependent:** Its anonymous accessibility is reported in your notes. The random identifier limits discovery; it does not provide per-user authorization.
+
+9. **Medium — Some malformed configurations produce repeated exceptions instead of the advertised deny state.**  
+   **Location:** `AccessService.cs:158–183`; `Configuration/PluginConfiguration.cs:18–23`.  
+   **Trigger:** `Users=null`, a null user entry, or a null tuner entry causes `NullReferenceException`, which the `ArgumentException` catch misses. `_state` remains unset, so subsequent accesses retry the failure. Synchronization aborts and existing visibility policies remain.  
+   **Fix:** Validate the complete configuration shape before construction and publish an explicit invalid/deny snapshot once. Avoid retrying the same invalid configuration on every request.  
+   **Nuance:** `Tuners=null` itself makes LINQ throw `ArgumentNullException`, which **is** caught.
+
+10. **Medium — Event feedback is finite normally, but queues unnecessary whole-user passes.**  
+    **Location:** `TagSyncService.cs:106–118,164–178`.  
+    **Trigger:** If `UpdateUserAsync()` emits `OnUserUpdated`, each changed user queues another synchronization and invalidates the cache. Updating U users can therefore queue U additional scans of all users. External update bursts have no coalescing or queue bound.  
+    **Fix:** Use one tracked worker with coalesced “users dirty/channels dirty” flags, and suppress or recognize the service’s own updates. Invalidate assignments only for changes that affect identity/mapping.  
+    **Important:** Equality checks prevent an inherent infinite loop once state stabilizes. There is no item-update subscription here, so channel writes do not directly recurse into this service. Event-emission details are **not independently verified**.
+
+11. **Medium — Shutdown can leave work running and produce unobserved task faults.**  
+    **Location:** `TagSyncService.cs:72,77–90,114–131,155`.  
+    **Trigger:** Shutdown/disposal overlaps an active or queued synchronization. `StopAsync()` neither cancels nor awaits work. `_gate.WaitAsync()` is outside `try`, and `_gate.Release()` can throw after disposal; both faults escape into discarded tasks. Repository writes explicitly use `CancellationToken.None`.  
+    **Fix:** Track the worker, cancel it, await completion before disposing the semaphore, and include acquisition/release in exception-safe lifetime handling.  
+    There is **no `async void`** here. Ordinary synchronization exceptions are logged; the unhandled paths are around the gate/lifetime boundary.
+
+12. **Medium — The gate does not serialize synchronization against Jellyfin’s refresh.**  
+    **Location:** `TagSyncService.cs:92–118,137–155`.  
+    **Trigger:** A startup/configuration sweep overlaps a guide refresh, or another writer changes an item/user after it was read. The service acts on a materialized snapshot while Jellyfin can update/delete those objects. One repository exception aborts the remaining channels and skips user synchronization; no retry is scheduled.  
+    **Fix:** Coordinate with refresh execution, re-read/revalidate changed objects before persistence, and retry transient failures with a tracked incomplete state.  
+    **Uncertainty:** Whether a stale save overwrites metadata, conflicts, or fails depends on Jellyfin repository behavior. I am **not** claiming a demonstrated lost update or resurrection of deleted channels.
+
+13. **Medium — Large changes monopolize the synchronization gate.**  
+    **Location:** `TagSyncService.cs:138–155`; `Core/TunerCatalog.cs:51`; `Core/UserTunerMap.cs:78`.  
+    **Trigger:** First installation, mass stream-URL changes, or retagging all channels. `GetItemList()` materializes the full result, then changed channels are saved sequentially. User-policy work waits behind those writes.  
+    **Fix:** Page with stable ordering, process only dirty/new channels where possible, coalesce refresh notifications, and ensure user restrictions are not delayed behind a full sweep. Cache the per-tuner tag strings and avoid the per-resolution match-array allocation.
+
+    **Actual 16,000-channel cost:** Unchanged channels cause **zero repository-update calls**, because of `SequenceEqual`. Every sweep still examines all channels and allocates merge results. With C changed channels, it makes **C repository-update calls**, not necessarily C SQL statements. Time is approximately query/materialization + scan + C × average save latency. At an illustrative—not measured—5 ms/save, 16,000 saves alone take 80 seconds. Exact SQL volume and memory per hydrated item cannot be established from this bundle.
+
+14. **Medium — Tag names have two concrete collision problems.**  
+    **Location:** `Core/TunerTags.cs:14–19,36–38,47–60`; `Core/UserTunerMap.cs:65,78`.  
+    **Trigger A:** A tuner key is `unassigned`. It passes validation, but its channel tag is always appended to every non-admin’s blocked tags, including its assigned user. Playback policy and visibility then disagree.  
+    **Fix A:** Reserve/reject `unassigned`.  
+    **Trigger B:** Existing administrator-managed restrictions use any `livetv-*` tag. `MergeTags()` removes them, including restrictions on non-Live-TV library content.  
+    **Fix B:** Track exact plugin-owned tags and detect pre-existing collisions before taking ownership.
+
+15. **Medium — Revocation can prevent explicit cleanup of an existing stream.**  
+    **Location:** `Filters/LiveTvAccessFilter.cs:120–122,180–192`; `Core/AccessPolicy.cs:26–39`.  
+    **Trigger:** A user opens a stream, then loses or changes tuner assignment. Their subsequent `LiveStreams/Close` request is denied using the current mapping.  
+    **Fix:** Separate permission to open/use a stream from permission to release a handle the caller previously acquired. Preserve ownership/reference information for cleanup.  
+    **Notes-dependent:** Server-side session cleanup may eventually release it; this is not proof of a permanent tuner leak.
+
+16. **Low — API-key exceptions differ between the filter and core policy.**  
+    **Location:** `Filters/LiveTvAccessFilter.cs:62`; `Core/AccessPolicy.cs:21`.  
+    **Trigger:** A principal has both `IsApiKey=true` and a nonempty user ID. The filter bypasses everything, whereas core policy bypasses only API keys with an empty user ID.  
+    **Fix:** Use one shared bypass rule and explicitly reject unsupported claim combinations. Your notes describe empty-user-ID API keys, so this is a latent inconsistency rather than a demonstrated current bypass.
+
+For **per-request performance**, there is no 16,000-channel traversal in the filter. It scans action arguments, performs individual item lookups, and linearly checks the small tuner catalog. The map is cached and dictionary-backed. Its internal dictionary is safe for concurrent reads after construction; cache publication/invalidation is locked.
+
+The avoidable costs are `GetUserById()` on every request reaching this global filter, repeated reflection and duplicate target checks, catalog match-array allocations, and rebuilding username assignments under the global lock after invalidation. Whether the Jellyfin lookups hit memory or the database is **not established here**. Cache reflection readers and deduplicate within a request first; any cross-request channel cache must invalidate on refresh, item changes, and configuration changes.
+
+For the requested **startup self-check**, `StartupLogService.cs:29–32` currently proves only that the hosted service ran. A concrete replacement check should:
+
+- Run after endpoint discovery, keeping enforcement unready until it passes. Verify the actual MVC filter registration and action descriptors for PlaybackInfo, Open/Close, streaming/HLS, and shared-buffer endpoints—including parameter names, binding sources, and DTO property types.
+- Validate configuration, reserved keys, user GUIDs, and correspondence with actual configured M3U tuner URLs/hosts.
+- Check real channel `ExternalId` values against their expected tuners. An empty channel set is “not verified,” not success. Check real, non-opening media-source tokens if available; generating tokens with your own helper only tests your helper against itself.
+- Verify the loaded authentication contract and add a runtime invariant: every authenticated request must resolve to a recognized user or supported API key. Startup reflection alone cannot prove actual claims issuance.
+- Verify the refresh task key and complete the initial synchronization successfully. Recheck channel/token assumptions after refresh.
+- On drift, deny protected operations and expose a failed readiness state. **Do not merely unload the plugin**, which removes the enforcement boundary.
+
+Finally, the precise missing-target behavior matters: a recognized channel with an unknown tuner is denied; a missing item is classified as non-Live-TV and passed downstream; a null/unrecognized body yields no targets and is passed downstream. Jellyfin may reject those latter requests itself, but the attached plugin does not guarantee that rejection.
