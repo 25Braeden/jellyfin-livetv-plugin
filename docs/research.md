@@ -653,3 +653,47 @@ library song.
   - Config rule: logo URLs must not carry credentials.
   - Tuner `UserAgent`/`DeviceId`/`FriendlyName` in the Live TV config are left visible for the same reason (not
     secrets), unless a provider treats the user agent as one.
+
+## Gate 3.5 phase 2, fix 6: live buffer URLs only for the server itself (2026-10-20)
+
+`LiveTv/LiveStreamFiles/{id}/stream.{container}` and `LiveTv/LiveRecordings/{id}/stream`
+(`LiveTvController.cs:1162-1203`) have no auth. They exist for Jellyfin's own ffmpeg, which gets them through
+`GetApiUrlForLocalAccess()` (`SharedHttpStream.cs:66`, `MediaSourceManager.cs:839`). That URL is built from the
+server's first non-loopback interface address (`ApplicationHost.cs:919-926`, `NetworkManager.cs:866-870`), so ffmpeg
+connects from the server to itself. Before this fix, the stream's random id was the only secret.
+
+**Rule** (`BufferAccess`, Core; the filter's `AdmitBuffer`): admins and API keys keep access. Everyone else, including
+anonymous callers, is allowed only if both of these hold:
+- The connection comes from the server itself: loopback, the same address it connected to (a self-connection to the
+  container's own IP), or one of the server's interface addresses (`ServerAddresses`, cached 1 minute; empty on
+  error, so it fails closed).
+- The request carries no forwarded headers: `X-Forwarded-*`, `X-Real-IP`, `Forwarded`, `X-Client-IP`,
+  `True-Client-IP`, `CF-Connecting-IP`, and `X-Original-For/-Host/-Proto/-Prefix`. ASP.NET's forwarded headers
+  middleware leaves the `X-Original-*` headers behind when it consumes `X-Forwarded-*` from a known proxy
+  (`ApiServiceCollectionExtensions.cs:169-190`). It also rewrites the remote address to the client's, which is then
+  not local either.
+
+Requests through Caddy are refused either way: they come from Caddy's container and carry forwarded headers.
+Everyone else gets the generic 403.
+
+**Verified live** (Gate 3, section 15; there is no Caddy locally, so proxied requests are simulated from inside the
+container, i.e. from the server's own address with a forwarded header added):
+
+| Request | Result |
+|---|---|
+| Anonymous from the host | 403 |
+| Logged-in A from the host | 403 |
+| Admin API key | 200 |
+| From the container's own interface address (the exact URL ffmpeg uses) | 200 |
+| From loopback | 200 |
+| From the server, with each of `X-Forwarded-For`, `X-Real-IP`, `Forwarded`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Original-For` | 403 |
+
+`.ts` playback through the buffer (HLS segment) still works. The server log shows exactly the 8 denials the test
+made, so ffmpeg was never refused.
+
+**Version-fragile:** this depends on ffmpeg reading the buffer over HTTP from the server's own address. If a future
+Jellyfin reads it from another address, `.ts` channels stop playing (visible as buffer denials in the log), and
+nothing is exposed.
+
+**Accepted:** a process on the Jellyfin host or inside its container can still read a buffer if it knows the random
+id. That is already inside the trust boundary.

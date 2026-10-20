@@ -66,12 +66,13 @@ public class Fix5bTests
     }
 
     [Fact]
-    public async Task Anonymous_ServerInternalBufferUrls_AreUnchanged_UntilFix6()
+    public async Task Anonymous_ServerInternalBufferUrls_WithNoServerAddress_AreDenied_SinceFix6()
     {
-        // Jellyfin's own ffmpeg reads these without auth (LiveTvController.cs:1162, :1189).
+        // Jellyfin's own ffmpeg reads these without auth (LiveTvController.cs:1162, :1189), from the server itself
+        // (see Fix6Tests). A request with no known remote address is not the server.
         var w = new World();
-        Assert.Null((await w.RunAt(Anonymous, Args(("streamId", Guid.NewGuid().ToString("N")), ("container", "ts")), "LiveTv", "GetLiveStreamFile", "GET", null, "streamId", "container")).Status);
-        Assert.Null((await w.RunAt(Anonymous, Args(("recordingId", Guid.NewGuid().ToString("N"))), "LiveTv", "GetLiveRecordingFile", "GET", null, "recordingId")).Status);
+        Assert.Equal(403, (await w.RunAt(Anonymous, Args(("streamId", Guid.NewGuid().ToString("N")), ("container", "ts")), "LiveTv", "GetLiveStreamFile", "GET", null, "streamId", "container")).Status);
+        Assert.Equal(403, (await w.RunAt(Anonymous, Args(("recordingId", Guid.NewGuid().ToString("N"))), "LiveTv", "GetLiveRecordingFile", "GET", null, "recordingId")).Status);
     }
 
     [Fact]

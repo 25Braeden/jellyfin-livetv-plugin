@@ -57,6 +57,18 @@ def raw_get(api, path, timeout=60):
         return e.code, e.read()
 
 
+def raw_get_limited(api, path, limit=4096, timeout=15):
+    """GET reading at most `limit` bytes (for endless live streams)."""
+    req = urllib.request.Request(n.BASE + path, headers={"Authorization": api.auth})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read(limit)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except Exception as e:  # noqa: BLE001 - report timeouts as a status
+        return type(e).__name__, b""
+
+
 def anon_get(path, limit=None, timeout=15):
     """GET with no Authorization header and no api_key."""
     req = urllib.request.Request(n.BASE + path)
@@ -433,15 +445,37 @@ def main():
             stop(B5, ms_b, ps_b, movies)
         time.sleep(2)
 
-    # The .ts buffer URL (unauthenticated, read by Jellyfin's own ffmpeg) is unchanged until fix 6. Since fix 5d
-    # non-admins don't see media source paths, so the buffer URL is read through the admin API key.
+    # The .ts buffer URL (unauthenticated, read by Jellyfin's own ffmpeg). Since fix 5d non-admins don't see media
+    # source paths, so the buffer URL is read through the admin API key. Since fix 6 only the server itself (no
+    # forwarded headers) and admins may read it. There is no Caddy locally, so proxy requests are simulated from
+    # inside the container (the server's own address) with forwarded headers added.
     st, ms_l, ps_l = n.open_channel(admin, aid, live)
     try:
         buffer_path = (ms_l.get("Path") or "") if ps_l else ""
         check("the .ts channel is served through the LiveStreamFiles buffer (seen via admin)", "/LiveTv/LiveStreamFiles/" in buffer_path, buffer_path[-60:])
         local = buffer_path[buffer_path.index("/LiveTv/"):] if "/LiveTv/" in buffer_path else "/LiveTv/LiveStreamFiles/x/stream.ts"
         st, body = anon_get(local, limit=4096)
-        check("LiveStreamFiles buffer URL still readable without auth (fix 6 will restrict it)", st == 200 and len(body) > 0, f"HTTP {st}")
+        check("buffer URL, anonymous from another host = 403 + generic message (fix 6)", st == 403 and body.decode(errors="replace") == DENIED, f"HTTP {st}")
+        st, _ = raw_get_limited(A5, local)
+        check("buffer URL, logged-in A from another host = 403 (fix 6)", st == 403, f"HTTP {st}")
+        st, body = raw_get_limited(admin, local)
+        check("buffer URL, admin API key = allowed", st == 200 and len(body) > 0, f"HTTP {st}")
+
+        def in_container(url, *headers):
+            cmd = ["docker", "exec", "jellyfin-dev", "curl", "-s", "-o", "/dev/null", "-m", "3", "-w", "%{http_code} %{size_download}", url]
+            for h in headers:
+                cmd += ["-H", h]
+            out = subprocess.run(cmd, capture_output=True, text=True).stdout.split()
+            return (int(out[0]), int(out[1])) if len(out) == 2 else (None, 0)
+
+        code, size = in_container(buffer_path)
+        check("buffer URL from the server's own interface address (as ffmpeg) = allowed", code == 200 and size > 0, f"{code}, {size} bytes")
+        code, size = in_container("http://127.0.0.1:8096" + local)
+        check("buffer URL from loopback (as ffmpeg) = allowed", code == 200 and size > 0, f"{code}, {size} bytes")
+        for header in ("X-Forwarded-For: 203.0.113.7", "X-Real-IP: 203.0.113.7", "Forwarded: for=203.0.113.7",
+                       "X-Forwarded-Proto: https", "X-Forwarded-Host: tv.example.com", "X-Original-For: 172.18.0.2:41234"):
+            code, _ = in_container("http://127.0.0.1:8096" + local, header)
+            check(f"buffer URL from the server but via a proxy ({header.split(':')[0]}) = 403", code == 403, str(code))
     finally:
         if ps_l:
             stop(admin, ms_l, ps_l, live)

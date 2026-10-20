@@ -77,11 +77,19 @@ public static class LiveTvEndpoints
     /// <returns><c>true</c> to let an anonymous request through unchecked.</returns>
     public static bool IsAnonymousPassThrough(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action)
     {
-        return action is not null
-            && (string.Equals(action.ControllerName, "Image", StringComparison.Ordinal)
-                || (string.Equals(action.ControllerName, LiveTvController, StringComparison.Ordinal)
-                    && action.ActionName is "GetLiveStreamFile" or "GetLiveRecordingFile"));
+        return action is not null && string.Equals(action.ControllerName, "Image", StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Gets whether an action serves a server-internal live buffer (read by Jellyfin's own ffmpeg): LiveTv
+    /// <c>GetLiveStreamFile</c> and <c>GetLiveRecordingFile</c> (Jellyfin.Api/Controllers/LiveTvController.cs:1162-1203).
+    /// </summary>
+    /// <param name="action">The action, if it is a controller action.</param>
+    /// <returns><c>true</c> for a buffer action.</returns>
+    public static bool IsBuffer(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action)
+        => action is not null
+            && string.Equals(action.ControllerName, LiveTvController, StringComparison.Ordinal)
+            && action.ActionName is "GetLiveStreamFile" or "GetLiveRecordingFile";
 
     /// <summary>
     /// Gets whether an action can open (and so share) a Live TV stream: playback info / open, and the streaming

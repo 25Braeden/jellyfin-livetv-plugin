@@ -63,7 +63,14 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         var caller = _access.GetCaller(context.HttpContext.User);
         var effective = caller ?? AnonymousCaller;
         var action = context.ActionDescriptor as ControllerActionDescriptor;
-        if (!AccessPolicy.IsExempt(effective)
+        if (LiveTvEndpoints.IsBuffer(action))
+        {
+            if (!AdmitBuffer(context, effective, started))
+            {
+                return;
+            }
+        }
+        else if (!AccessPolicy.IsExempt(effective)
             && !(caller is null && LiveTvEndpoints.IsAnonymousPassThrough(action))
             && !(IsLegacyHls(action) ? AdmitLegacyHls(context, action!, effective, caller is null, started) : Admit(context, effective, started)))
         {
@@ -95,6 +102,20 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         {
             _sync.MarkUsersDirty("user write " + context.ActionDescriptor.AttributeRouteInfo?.Template);
         }
+    }
+
+    /// <summary>
+    /// The live buffer URLs carry no auth and are only for Jellyfin's own ffmpeg, which reads them from the server
+    /// itself. Anything else (other hosts, anything through the reverse proxy) is denied; admins keep access.
+    /// </summary>
+    private bool AdmitBuffer(ActionExecutingContext context, Caller caller, long started)
+    {
+        var connection = context.HttpContext.Connection;
+        var isLocal = BufferAccess.IsServerLocal(connection.RemoteIpAddress, connection.LocalIpAddress, ServerAddresses.Get);
+        var isForwarded = BufferAccess.HasForwardedHeaders(context.HttpContext.Request.Headers.Keys);
+        var decision = BufferAccess.Decide(caller, isLocal, isForwarded);
+        return decision == AccessDecision.Allow
+            || Deny(context, caller, decision, "buffer", isForwarded ? "forwarded" : "not from the server", started, 0);
     }
 
     /// <summary>
