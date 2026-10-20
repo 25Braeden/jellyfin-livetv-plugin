@@ -24,6 +24,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Admin settings page (Dashboard > Plugins > LiveTvAccess), served by Jellyfin from the assembly. -->
+    <EmbeddedResource Include="Configuration\configPage.html" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Jellyfin.Plugin.LiveTvAccess.Tests" />
   </ItemGroup>
 

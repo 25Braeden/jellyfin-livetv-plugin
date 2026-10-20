@@ -795,6 +795,43 @@ def main():
           "SELF-CHECK FAILED" in log9 and "Live TV access restored" in log9)
     check("server log: self-check lines carry no tuner path", not any("missing.m3u" in l for l in log9.splitlines() if "SelfCheck" in l))
 
+    print("== 20. settings page (step 3)")
+    st, pages = admin.get("/web/ConfigurationPages")
+    mine = [x for x in pages if x.get("Name") == "LiveTvAccess"] if st == 200 else []
+    check("dashboard lists the LiveTvAccess settings page", len(mine) == 1 and mine[0].get("PluginId", "").replace("-", "") == PLUGIN_ID, str(mine))
+    check("non-admin A cannot list configuration pages", A9.get("/web/ConfigurationPages")[0] == 403)
+    st, html = raw_get(admin, "/web/ConfigurationPage?name=LiveTvAccess")
+    source = (n.ROOT / "src" / "Jellyfin.Plugin.LiveTvAccess" / "Configuration" / "configPage.html").read_bytes()
+    check("server serves the embedded page byte-for-byte", st == 200 and html == source, f"HTTP {st}, {len(html)} bytes")
+    script = html.decode().split('<script type="text/javascript">', 1)[-1].split("</script>", 1)[0]
+    js = pathlib.Path(n.ROOT / "local" / "page-script-check.js")
+    js.write_text(script)
+    try:
+        node = subprocess.run(["node", "--check", str(js)], capture_output=True, text=True)
+        check("page script parses (node --check)", node.returncode == 0, node.stderr[:200])
+    finally:
+        js.unlink()
+
+    # Save exactly as the page does: read the config, replace Tuners and Users (user picked by id from GET /Users,
+    # display name possibly stale), write it back through the plugin config API.
+    before = n.ok(admin.get(f"/Plugins/{PLUGIN_ID}/Configuration"), "cfg")
+    users_now = n.users_by_name(admin)
+    page_cfg = dict(before)
+    page_cfg["Tuners"] = [{"Key": k, "Url": url} for k, url in n.TUNERS.items()]
+    page_cfg["Users"] = [{"UserId": users_now["A"]["Id"], "UserName": "stale-name", "TunerKey": "tuner1"},
+                         {"UserId": users_now["B"]["Id"], "UserName": "B", "TunerKey": "tuner2"}]
+    page_cfg["OwnedTagHistory"] = []
+    check("page-style save accepted (204)", admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", page_cfg)[0] == 204)
+    after = n.ok(admin.get(f"/Plugins/{PLUGIN_ID}/Configuration"), "cfg")
+    names = {u["UserId"].replace("-", ""): u["UserName"] for u in after["Users"]}
+    check("saved user ids kept, stale display name refreshed by the server",
+          names.get(users_now["A"]["Id"].replace("-", "")) == "A" and names.get(users_now["B"]["Id"].replace("-", "")) == "B", str(names))
+    check("owned-tag history kept although the page sent none",
+          set(before.get("OwnedTagHistory") or []) <= set(after.get("OwnedTagHistory") or []), str(after.get("OwnedTagHistory")))
+    check("after the page-style save: tags in sync", wait_for(lambda: tags_match(admin, aid, n.expected_channels())))
+    check("after the page-style save: status Healthy", wait_for(lambda: status(refresh=True)["State"] == "Healthy", 20))
+    admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", CONFIG)
+
     print("== 10. logging")
     time.sleep(1)
     log = subprocess.run(["docker", "logs", "--since", since, "jellyfin-dev"], capture_output=True, text=True)

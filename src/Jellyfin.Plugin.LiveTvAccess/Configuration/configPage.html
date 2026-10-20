@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>LiveTvAccess</title>
+</head>
+<body>
+    <div id="LiveTvAccessConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select">
+        <style>
+            #LiveTvAccessConfigPage .ltva-row { display: flex; flex-wrap: wrap; gap: 0.75em; align-items: flex-end; margin-bottom: 0.5em; }
+            #LiveTvAccessConfigPage .ltva-row .inputContainer,
+            #LiveTvAccessConfigPage .ltva-row .selectContainer { margin-bottom: 0; flex: 1 1 14em; }
+            #LiveTvAccessConfigPage .ltva-row .ltva-wide { flex: 3 1 24em; }
+            #LiveTvAccessConfigPage .ltva-badge { display: inline-block; padding: 0.2em 0.7em; border-radius: 0.3em; font-weight: bold; margin-right: 0.5em; }
+            #LiveTvAccessConfigPage .ltva-Healthy { background: #2e7d32; color: #fff; }
+            #LiveTvAccessConfigPage .ltva-Failed { background: #c62828; color: #fff; }
+            #LiveTvAccessConfigPage .ltva-Pending { background: #757575; color: #fff; }
+            #LiveTvAccessConfigPage table { border-collapse: collapse; width: 100%; margin: 0.5em 0 1em; }
+            #LiveTvAccessConfigPage th, #LiveTvAccessConfigPage td { text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid rgba(128, 128, 128, 0.3); }
+            #LiveTvAccessConfigPage .ltva-problem { color: #ef5350; }
+            #LiveTvAccessConfigPage .ltva-warning { color: #ffb74d; }
+            #LiveTvAccessConfigPage .ltva-muted { opacity: 0.7; }
+            #LiveTvAccessConfigPage .ltva-section { margin-bottom: 2em; }
+        </style>
+        <div data-role="content">
+            <div class="content-primary">
+                <h2 class="sectionTitle">LiveTvAccess</h2>
+                <p class="fieldDescription">
+                    Each user gets the channels of one tuner. Admins are not restricted. Users without a tuner get no
+                    Live TV; to hide Live TV entirely, turn off "Allow Live TV access" in the user's settings.
+                </p>
+
+                <div class="ltva-section">
+                    <h3>Status</h3>
+                    <div>
+                        <span id="ltvaState" class="ltva-badge ltva-Pending">Loading</span>
+                        <span id="ltvaChecked" class="ltva-muted"></span>
+                    </div>
+                    <ul id="ltvaProblems"></ul>
+                    <ul id="ltvaWarnings"></ul>
+                    <table>
+                        <thead>
+                            <tr><th>Tuner</th><th>Location</th><th>Channels</th><th>Users</th><th>Jellyfin tuner</th></tr>
+                        </thead>
+                        <tbody id="ltvaTunerStatus"></tbody>
+                    </table>
+                    <div id="ltvaDuplicatesBlock" hidden>
+                        <h4>Stream URLs listed by more than one tuner (warning)</h4>
+                        <table>
+                            <thead>
+                                <tr><th>Host</th><th>Hash</th><th>Tuners</th><th>Channels</th></tr>
+                            </thead>
+                            <tbody id="ltvaDuplicates"></tbody>
+                        </table>
+                    </div>
+                    <ul id="ltvaChecks" class="ltva-muted"></ul>
+                    <button is="emby-button" type="button" id="ltvaRunCheck" class="raised emby-button">
+                        <span>Run check now</span>
+                    </button>
+                </div>
+
+                <form id="LiveTvAccessConfigForm">
+                    <div class="ltva-section">
+                        <h3>Tuners</h3>
+                        <p class="fieldDescription">
+                            Key: a-z, 0-9 and '-'. M3U path: must match the Live TV tuner's file or URL in Jellyfin
+                            exactly; pick it from the list.
+                        </p>
+                        <datalist id="ltvaJellyfinTuners"></datalist>
+                        <div id="ltvaTuners"></div>
+                        <button is="emby-button" type="button" id="ltvaAddTuner" class="emby-button">
+                            <span>Add tuner</span>
+                        </button>
+                    </div>
+
+                    <div class="ltva-section">
+                        <h3>Users</h3>
+                        <p class="fieldDescription">One tuner per user. Users not listed here get no Live TV.</p>
+                        <div id="ltvaUsers"></div>
+                        <button is="emby-button" type="button" id="ltvaAddUser" class="emby-button">
+                            <span>Add user</span>
+                        </button>
+                    </div>
+
+                    <ul id="ltvaErrors" class="ltva-problem"></ul>
+                    <div>
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script type="text/javascript">
+            (function () {
+                var pluginId = '4d5aa36c-9164-4f4d-ba7f-0fa6c25bfd28';
+                var page = document.querySelector('#LiveTvAccessConfigPage');
+                var allUsers = [];
+
+                function $(selector) {
+                    return page.querySelector(selector);
+                }
+
+                // Every value goes in through textContent / value: nothing from the server is parsed as HTML.
+                function el(tag, props, text) {
+                    var node = document.createElement(tag);
+                    Object.keys(props || {}).forEach(function (key) {
+                        if (key === 'is' || key.indexOf('data-') === 0 || key === 'list' || key === 'for') {
+                            node.setAttribute(key, props[key]);
+                        } else {
+                            node[key] = props[key];
+                        }
+                    });
+                    if (text !== undefined && text !== null) {
+                        node.textContent = String(text);
+                    }
+                    return node;
+                }
+
+                function clear(node) {
+                    while (node.firstChild) {
+                        node.removeChild(node.firstChild);
+                    }
+                    return node;
+                }
+
+                function field(labelText, control, wide) {
+                    var container = el('div', { className: (control.tagName === 'SELECT' ? 'selectContainer' : 'inputContainer') + (wide ? ' ltva-wide' : '') });
+                    container.appendChild(el('label', { className: control.tagName === 'SELECT' ? 'selectLabel' : 'inputLabel' }, labelText));
+                    container.appendChild(control);
+                    return container;
+                }
+
+                function removeButton(row) {
+                    var button = el('button', { type: 'button', className: 'emby-button', is: 'emby-button' }, 'Remove');
+                    button.addEventListener('click', function () {
+                        row.remove();
+                        refreshTunerChoices();
+                    });
+                    return button;
+                }
+
+                function tunerKeys() {
+                    return Array.prototype.map.call(page.querySelectorAll('.ltva-tuner-key'), function (input) {
+                        return input.value.trim().toLowerCase();
+                    }).filter(function (key) { return key.length > 0; });
+                }
+
+                function addTunerRow(tuner) {
+                    var row = el('div', { className: 'ltva-row ltva-tuner' });
+                    var key = el('input', { type: 'text', className: 'emby-input ltva-tuner-key', is: 'emby-input', value: (tuner && tuner.Key) || '' });
+                    var url = el('input', { type: 'text', className: 'emby-input ltva-tuner-url', is: 'emby-input', value: (tuner && tuner.Url) || '', list: 'ltvaJellyfinTuners' });
+                    key.addEventListener('input', refreshTunerChoices);
+                    row.appendChild(field('Key', key, false));
+                    row.appendChild(field('M3U path', url, true));
+                    row.appendChild(removeButton(row));
+                    $('#ltvaTuners').appendChild(row);
+                }
+
+                function fillTunerSelect(select, selected) {
+                    var current = selected !== undefined ? selected : select.value;
+                    clear(select);
+                    select.appendChild(el('option', { value: '' }, '(choose a tuner)'));
+                    var keys = tunerKeys();
+                    if (current && keys.indexOf(current) < 0) {
+                        keys = keys.concat([current]);
+                    }
+                    keys.forEach(function (key) {
+                        select.appendChild(el('option', { value: key }, key));
+                    });
+                    select.value = current || '';
+                }
+
+                function refreshTunerChoices() {
+                    page.querySelectorAll('.ltva-user-tuner').forEach(function (select) {
+                        fillTunerSelect(select);
+                    });
+                }
+
+                function addUserRow(entry) {
+                    var row = el('div', { className: 'ltva-row ltva-user' });
+                    var user = el('select', { className: 'emby-select ltva-user-id', is: 'emby-select' });
+                    user.appendChild(el('option', { value: '' }, '(choose a user)'));
+                    var known = false;
+                    allUsers.forEach(function (u) {
+                        var admin = u.Policy && u.Policy.IsAdministrator;
+                        user.appendChild(el('option', { value: u.Id }, u.Name + (admin ? ' (admin, not restricted)' : '')));
+                        known = known || (entry && entry.UserId && entry.UserId.replace(/-/g, '').toLowerCase() === u.Id.replace(/-/g, '').toLowerCase());
+                    });
+                    if (entry && entry.UserId && !known) {
+                        user.appendChild(el('option', { value: entry.UserId }, (entry.UserName || entry.UserId) + ' (no longer exists)'));
+                    }
+                    if (entry && entry.UserId) {
+                        var match = allUsers.filter(function (u) {
+                            return u.Id.replace(/-/g, '').toLowerCase() === entry.UserId.replace(/-/g, '').toLowerCase();
+                        })[0];
+                        user.value = match ? match.Id : entry.UserId;
+                    }
+                    var tuner = el('select', { className: 'emby-select ltva-user-tuner', is: 'emby-select' });
+                    fillTunerSelect(tuner, (entry && entry.TunerKey) || '');
+                    row.appendChild(field('User', user, false));
+                    row.appendChild(field('Tuner', tuner, false));
+                    row.appendChild(removeButton(row));
+                    $('#ltvaUsers').appendChild(row);
+                }
+
+                function collect() {
+                    var errors = [];
+                    var keyPattern = /^[a-z0-9-]+$/;
+                    var tuners = [];
+                    page.querySelectorAll('.ltva-tuner').forEach(function (row) {
+                        var key = row.querySelector('.ltva-tuner-key').value.trim().toLowerCase();
+                        var url = row.querySelector('.ltva-tuner-url').value.trim();
+                        if (!key && !url) {
+                            return;
+                        }
+                        if (!keyPattern.test(key)) {
+                            errors.push('Tuner key "' + key + '": use a-z, 0-9 and -.');
+                        } else if (key === 'unassigned') {
+                            errors.push('Tuner key "unassigned" is reserved.');
+                        }
+                        if (!url) {
+                            errors.push('Tuner "' + key + '" needs an M3U path.');
+                        }
+                        if (tuners.some(function (t) { return t.Key === key; })) {
+                            errors.push('Tuner key "' + key + '" is used twice.');
+                        }
+                        if (url && tuners.some(function (t) { return t.Url === url; })) {
+                            errors.push('The same M3U path is used by two tuners.');
+                        }
+                        tuners.push({ Key: key, Url: url });
+                    });
+
+                    var users = [];
+                    page.querySelectorAll('.ltva-user').forEach(function (row) {
+                        var select = row.querySelector('.ltva-user-id');
+                        var id = select.value;
+                        var tunerKey = row.querySelector('.ltva-user-tuner').value;
+                        if (!id && !tunerKey) {
+                            return;
+                        }
+                        var name = select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : '';
+                        if (!id) {
+                            errors.push('Choose a user for every row.');
+                            return;
+                        }
+                        if (!tunerKey || !tuners.some(function (t) { return t.Key === tunerKey; })) {
+                            errors.push('Choose one of the tuners above for ' + name + '.');
+                        }
+                        if (users.some(function (u) { return u.UserId === id; })) {
+                            errors.push(name + ' is listed twice.');
+                        }
+                        var user = allUsers.filter(function (u) { return u.Id === id; })[0];
+                        users.push({ UserId: id, UserName: user ? user.Name : '', TunerKey: tunerKey });
+                    });
+
+                    return { tuners: tuners, users: users, errors: errors };
+                }
+
+                function showErrors(errors) {
+                    var list = clear($('#ltvaErrors'));
+                    errors.forEach(function (message) {
+                        list.appendChild(el('li', {}, message));
+                    });
+                }
+
+                function renderStatus(status) {
+                    var state = $('#ltvaState');
+                    state.className = 'ltva-badge ltva-' + (status.State || 'Pending');
+                    state.textContent = status.State || 'Pending';
+                    $('#ltvaChecked').textContent = status.CheckedAtUtc
+                        ? 'Checked ' + new Date(status.CheckedAtUtc).toLocaleString() + ' (' + (status.Trigger || '') + ')'
+                            + (status.InitialSyncComplete ? '' : ', initial sync still running')
+                        : 'Not checked yet';
+
+                    var problems = clear($('#ltvaProblems'));
+                    (status.Problems || []).forEach(function (p) {
+                        problems.appendChild(el('li', { className: 'ltva-problem' }, p));
+                    });
+                    var warnings = clear($('#ltvaWarnings'));
+                    (status.Warnings || []).forEach(function (w) {
+                        warnings.appendChild(el('li', { className: 'ltva-warning' }, w));
+                    });
+
+                    var tuners = clear($('#ltvaTunerStatus'));
+                    (status.Tuners || []).forEach(function (t) {
+                        var row = el('tr');
+                        [t.Key, t.Location, t.ChannelCount, t.UserCount, t.InJellyfin ? 'yes' : 'NO'].forEach(function (value) {
+                            row.appendChild(el('td', {}, value));
+                        });
+                        tuners.appendChild(row);
+                    });
+
+                    var duplicates = clear($('#ltvaDuplicates'));
+                    (status.Duplicates || []).forEach(function (d) {
+                        var row = el('tr');
+                        [d.Host, d.Hash, (d.Tuners || []).join(', '), d.ChannelCount].forEach(function (value) {
+                            row.appendChild(el('td', {}, value));
+                        });
+                        duplicates.appendChild(row);
+                    });
+                    $('#ltvaDuplicatesBlock').hidden = !(status.Duplicates || []).length;
+
+                    var checks = clear($('#ltvaChecks'));
+                    (status.Checks || []).forEach(function (c) {
+                        checks.appendChild(el('li', { className: c.Ok ? '' : 'ltva-problem' }, (c.Ok ? 'OK: ' : 'NOT OK: ') + c.Name + ' (' + c.Detail + ')'));
+                    });
+                }
+
+                function loadStatus(refresh) {
+                    var url = ApiClient.getUrl('LiveTvAccess/Status', refresh ? { refresh: true } : {});
+                    return ApiClient.getJSON(url).then(renderStatus, function () {
+                        renderStatus({ State: 'Failed', Problems: ['Could not load the status.'] });
+                    });
+                }
+
+                page.addEventListener('pageshow', function () {
+                    Dashboard.showLoadingMsg();
+                    Promise.all([
+                        ApiClient.getPluginConfiguration(pluginId),
+                        ApiClient.getUsers(),
+                        ApiClient.getNamedConfiguration('livetv')
+                    ]).then(function (results) {
+                        var config = results[0];
+                        allUsers = (results[1] || []).slice().sort(function (a, b) { return a.Name.localeCompare(b.Name); });
+                        var datalist = clear($('#ltvaJellyfinTuners'));
+                        ((results[2] && results[2].TunerHosts) || []).forEach(function (host) {
+                            if ((host.Type || '').toLowerCase() === 'm3u' && host.Url) {
+                                datalist.appendChild(el('option', { value: host.Url, label: host.FriendlyName || 'M3U tuner' }));
+                            }
+                        });
+                        clear($('#ltvaTuners'));
+                        (config.Tuners || []).forEach(addTunerRow);
+                        clear($('#ltvaUsers'));
+                        (config.Users || []).forEach(addUserRow);
+                        showErrors([]);
+                        Dashboard.hideLoadingMsg();
+                        loadStatus(false);
+                    }, function () {
+                        Dashboard.hideLoadingMsg();
+                        showErrors(['Could not load the configuration.']);
+                    });
+                });
+
+                $('#ltvaAddTuner').addEventListener('click', function () {
+                    addTunerRow(null);
+                });
+
+                $('#ltvaAddUser').addEventListener('click', function () {
+                    addUserRow(null);
+                });
+
+                $('#ltvaRunCheck').addEventListener('click', function () {
+                    loadStatus(true);
+                });
+
+                $('#LiveTvAccessConfigForm').addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    var form = collect();
+                    showErrors(form.errors);
+                    if (form.errors.length) {
+                        return false;
+                    }
+
+                    Dashboard.showLoadingMsg();
+                    // Same path as any plugin config save: the server resolves user ids and keeps its own bookkeeping.
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        config.Tuners = form.tuners;
+                        config.Users = form.users;
+                        return ApiClient.updatePluginConfiguration(pluginId, config);
+                    }).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                        setTimeout(function () { loadStatus(true); }, 1500);
+                    }, function () {
+                        Dashboard.hideLoadingMsg();
+                        showErrors(['Saving failed.']);
+                    });
+                    return false;
+                });
+            })();
+        </script>
+    </div>
+</body>
+</html>

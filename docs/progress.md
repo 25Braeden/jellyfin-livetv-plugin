@@ -19,6 +19,7 @@
 | 2026-10-20 | Gate 3.5 fix 5e: no untracked static streams of Live TV channels; gaps 2-4 documented | f565bc4 | 164/164 acceptance |
 | 2026-10-20 | Gate 3.5 fix 6: live buffer URLs only from the server itself, no forwarded headers | 4971b2e | 174/174 acceptance |
 | 2026-10-20 | Gate 3.5 fix 7: startup self-check, failed state, admin status API | 0423c89 | 197/197 acceptance |
+| 2026-10-20 | Step 3: admin settings page (tuners, user mapping, self-check status) | 21b0a32 | 206/206 acceptance |
 
 ## Scale test (16,000 channels), 2026-10-19
 

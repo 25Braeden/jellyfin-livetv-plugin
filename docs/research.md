@@ -754,3 +754,40 @@ does.
 
 **Version-fragile:** the whole contract is pinned to 10.11.11. That's the point: on an upgrade, drift shows up as a
 failed state with the exact missing piece, instead of a silent bypass.
+
+## Step 3: admin settings page (2026-10-20)
+
+`Configuration/configPage.html` is an embedded resource registered through `IHasWebPages.GetPages()`, the standard
+plugin page mechanism (as in `../jellyfin-plugin-template`). Jellyfin lists it under Dashboard > Plugins >
+LiveTvAccess. `GET /web/ConfigurationPages` is admin-only (`DashboardController.cs:48-49`); the page's data calls are
+admin-only too: plugin config (`PluginsController.cs:25`) and `GET /LiveTvAccess/Status`.
+
+- **Tuners:** key and M3U path rows. The path field suggests Jellyfin's own M3U tuner URLs (a `datalist` from
+  `livetv` config), because the path must match exactly. Validation runs before saving and follows the server's
+  rules: key `a-z0-9-`, not `unassigned`, unique; path required and unique.
+- **Users:** pick a user from a dropdown (`ApiClient.getUsers()`; admins are marked "not restricted", and missing
+  users are kept and marked) and a tuner from the configured keys. One row per user.
+- **Status (read-only):** the self-check state, problems, warnings, per-tuner channel and user counts, duplicates
+  (host and hash) and the individual checks, with a "Run check now" button (`?refresh=true`). After a save, the status
+  refreshes by itself.
+- **Save:** the normal path. `getPluginConfiguration`, replace `Tuners` and `Users`, then
+  `updatePluginConfiguration`. So `Plugin.UpdateConfiguration` still resolves names and ids, the owned-tag history is
+  kept, and the save fires `ConfigurationChanged`, which drives the tag sync and the self-check.
+- **No external resources:** inline CSS and JS only, no `src` or `href`, no fetches. Nothing from the server is
+  inserted as HTML: every value goes in through `textContent` or `value`, and there is no `innerHTML`. Unit tests
+  check both.
+
+**Verified:**
+- Unit tests check that the page is embedded, the plugin id, the save path, that nothing external is loaded and that
+  nothing is injected as HTML. A save payload shaped like the page's keeps the id, refreshes a stale name and keeps
+  the history.
+- Live (Gate 3, section 20):
+  - The dashboard lists the page; A can't list pages.
+  - The server serves the embedded page byte-for-byte, and its script parses (`node --check`).
+  - A save made exactly as the page makes it is accepted. The server keeps the ids, fixes the stale name and keeps the
+    history; tags stay in sync, and the self-check is Healthy.
+
+**Not verified visually:** I didn't open the page in a browser. Not tested: how the rows, `emby-select` controls and
+status badge render and lay out in the 10.11 dashboard theme; the user and tuner dropdowns, the datalist
+suggestions, the Add and Remove buttons, and the inline validation messages; and the `Dashboard.*` loading and
+saved-toast helpers. Worth a quick manual look in the dashboard before deploying.

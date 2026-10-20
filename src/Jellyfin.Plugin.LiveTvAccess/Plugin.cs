@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using Jellyfin.Plugin.LiveTvAccess.Configuration;
 using MediaBrowser.Common.Configuration;
@@ -13,7 +15,7 @@ namespace Jellyfin.Plugin.LiveTvAccess;
 /// <summary>
 /// Per-user Live TV access plugin entry point.
 /// </summary>
-public class Plugin : BasePlugin<PluginConfiguration>
+public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     private readonly ILogger<Plugin> _logger;
     private readonly IUserManager _userManager;
@@ -48,6 +50,19 @@ public class Plugin : BasePlugin<PluginConfiguration>
     /// Gets the current plugin instance.
     /// </summary>
     public static Plugin? Instance { get; private set; }
+
+    /// <inheritdoc />
+    public IEnumerable<PluginPageInfo> GetPages()
+    {
+        return
+        [
+            new PluginPageInfo
+            {
+                Name = Name,
+                EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.configPage.html", GetType().Namespace),
+            },
+        ];
+    }
 
     /// <summary>
     /// Saves a new configuration (Jellyfin's plugin config API calls this). Usernames are resolved to user ids
