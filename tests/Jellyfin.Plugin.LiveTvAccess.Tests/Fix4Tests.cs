@@ -21,10 +21,12 @@ public class Fix4Tests
     }
 
     [Fact]
-    public async Task AnonymousRequests_StillPassToJellyfin()
+    public async Task AnonymousRequests_NamingLiveTv_AreDenied()
     {
+        // Fix 4 let anonymous requests through ("Jellyfin decides"). Fix 5b: Jellyfin doesn't require auth on
+        // the stream endpoints, so anonymous callers get default-deny too.
         var w = new World();
-        Assert.Null(await w.RunFilter(World.Principal(null, authenticated: false), Item(w.Tuner2Channel.Id)));
+        Assert.Equal(403, await w.RunFilter(World.Principal(null, authenticated: false), Item(w.Tuner2Channel.Id)));
     }
 
     [Fact]

@@ -56,6 +56,18 @@ def raw_get(api, path, timeout=60):
         return e.code, e.read()
 
 
+def anon_get(path, limit=None, timeout=15):
+    """GET with no Authorization header and no api_key."""
+    req = urllib.request.Request(n.BASE + path)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read(limit) if limit else r.read(65536)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except Exception as e:  # noqa: BLE001 - report timeouts as a status
+        return type(e).__name__, b""
+
+
 def channels_by(expected, tuner):
     return {c for c, (t, _) in expected.items() if t == tuner}
 
@@ -354,6 +366,85 @@ def main():
         check(f"{who} movie image not blocked by the plugin", st != 403, f"HTTP {st}")
         st, body = raw_get(api, f"/Audio/{lib['Audio']}/stream.mp3?static=true")
         check(f"{who} song streams", st == 200 and len(body) > 0, f"HTTP {st}, {len(body)} bytes")
+
+    print("== 15. anonymous callers, legacy params, play session reuse (fix 5b)")
+    anon_since = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    time.sleep(1)
+    ms_news_id = n.ok(admin.post(f"/Items/{news}/PlaybackInfo", {"UserId": aid}, userId=aid), "pi")["MediaSources"][0]["Id"]
+    for label, path in {
+        "stream?static=true, tuner2 channel": f"/Videos/{movies}/stream?static=true",
+        "stream.ts (no static), tuner2 channel": f"/Videos/{movies}/stream.ts",
+        "stream?static=true, tuner1 channel": f"/Videos/{news}/stream?static=true",
+        "Audio stream, tuner2 channel": f"/Audio/{movies}/stream?static=true",
+    }.items():
+        st, body = anon_get(path)
+        check(f"anonymous {label} = 403 + generic message", st == 403 and body.decode(errors="replace") == DENIED, f"HTTP {st}")
+    # DynamicHlsController has a class-level [Authorize] (DynamicHlsController.cs:40): Jellyfin rejects first (401).
+    st, _ = anon_get(f"/Videos/{news}/master.m3u8?mediaSourceId={ms_news_id}")
+    check("anonymous HLS master, tuner1 channel = denied (401 by Jellyfin auth, or 403)", st in (401, 403), f"HTTP {st}")
+    time.sleep(2)
+    opened = [l for l in subprocess.run(["docker", "logs", "--since", anon_since, "jellyfin-dev"], capture_output=True, text=True).stdout.splitlines()
+              if "Opening channel stream" in l]
+    check("anonymous attempts opened no tuner and made no upstream request",
+          not opened and not n.fakestreams_requests(anon_since))
+
+    lib = library_fixture.main()
+    for label, path, ok_status in (
+        ("public system info", "/System/Info/Public", 200),
+        ("branding", "/Branding/Configuration", 200),
+        ("library movie stream?static=true", f"/Videos/{lib['Movie']}/stream?static=true", 200),
+    ):
+        st, _ = anon_get(path)
+        check(f"anonymous {label} still works", st == ok_status, f"HTTP {st}")
+    for label, item in (("tuner1 channel logo", news), ("tuner2 channel logo", movies), ("movie image", lib["Movie"])):
+        st, _ = anon_get(f"/Items/{item}/Images/Primary")
+        check(f"anonymous {label} not blocked (accepted: metadata)", st != 403, f"HTTP {st}")
+
+    # Legacy params field 22: A asks for its own movie with B's open live stream id hidden in "params".
+    A5, a5u, _ = n.login("A", "gate3-A-fix5b")
+    B5, b5u, _ = n.login("B", "gate3-B-fix5b")
+    st_a, ms_a, ps_a = n.open_channel(A5, a5u, news)
+    st_b, ms_b, ps_b = n.open_channel(B5, b5u, movies)
+    try:
+        def legacy(lid):
+            fields = [""] * 29
+            fields[22] = lid
+            return f"/Videos/{lib['Movie']}/stream?static=true&params={urllib.parse.quote(';'.join(fields))}"
+        st, _ = raw_get(A5, legacy(ms_b["LiveStreamId"]), timeout=15)
+        check("A: own movie + params field 22 = B's stream id -> 403", st == 403, f"HTTP {st}")
+        st, body = raw_get(A5, legacy(ms_a["LiveStreamId"]), timeout=15)
+        check("A: own movie + params field 22 = A's own stream id -> allowed", st == 200 and len(body) > 0, f"HTTP {st}, {len(body)} bytes")
+
+        # Play session reuse: B starts an HLS transcode of its channel; A tries to attach to that job.
+        q = urllib.parse.urlencode({"mediaSourceId": ms_b["Id"], "liveStreamId": ms_b["LiveStreamId"], "playSessionId": ps_b,
+                                    "videoCodec": "h264", "audioCodec": "aac", "segmentContainer": "ts"})
+        st, master = raw_get(B5, f"/Videos/{movies}/master.m3u8?{q}")
+        sub = next((l for l in master.decode().splitlines() if l and not l.startswith("#")), None) if st == 200 else None
+        if sub:
+            raw_get(B5, f"/Videos/{movies}/{sub}", timeout=90)
+        st, _ = raw_get(A5, f"/Videos/{lib['Movie']}/stream.ts?playSessionId={ps_b}&videoCodec=copy&audioCodec=copy", timeout=15)
+        check("A: own movie + B's live play session id -> 403", st == 403, f"HTTP {st}")
+    finally:
+        if ps_a:
+            stop(A5, ms_a, ps_a, news)
+        if ps_b:
+            stop(B5, ms_b, ps_b, movies)
+        time.sleep(2)
+
+    # The .ts buffer URL (unauthenticated, read by Jellyfin's own ffmpeg) is unchanged until fix 6.
+    st, ms_l, ps_l = n.open_channel(A5, a5u, live)
+    try:
+        buffer_path = (ms_l.get("Path") or "") if ps_l else ""
+        check("A's .ts channel is served through the LiveStreamFiles buffer", "/LiveTv/LiveStreamFiles/" in buffer_path, buffer_path[-60:])
+        local = buffer_path[buffer_path.index("/LiveTv/"):] if "/LiveTv/" in buffer_path else "/LiveTv/LiveStreamFiles/x/stream.ts"
+        st, body = anon_get(local, limit=4096)
+        check("LiveStreamFiles buffer URL still readable without auth (fix 6 will restrict it)", st == 200 and len(body) > 0, f"HTTP {st}")
+    finally:
+        if ps_l:
+            stop(A5, ms_l, ps_l, live)
+        time.sleep(2)
+    ok, detail = plays(A5, a5u, live)
+    check(".ts playback via the buffer still works (HLS segment)", ok, detail)
 
     print("== 10. logging")
     time.sleep(1)

@@ -218,7 +218,10 @@ public sealed class World
         recordingsFake.Handlers["GetActiveRecordingInfo"] = args => ActiveRecordingPaths.Contains((string)args[0]!) ? new ActiveRecordingInfo() : null;
         Video.RecordingsManager = recordings;
         UserManager = users;
-        Access = new AccessService(library, mediaSources, users, config, NullLogger<AccessService>.Instance);
+        var (transcodes, transcodesFake) = Fake<MediaBrowser.Controller.MediaEncoding.ITranscodeManager>.Create();
+        transcodesFake.Handlers["GetTranscodingJob"] = args =>
+            args.Length == 1 && args[0] is string id && Jobs.TryGetValue(id, out var job) ? job : null;
+        Access = new AccessService(library, mediaSources, users, config, transcodes, NullLogger<AccessService>.Instance);
         SetConfig(DefaultConfig());
     }
 
@@ -280,6 +283,26 @@ public sealed class World
 
     /// <summary>Ids whose lookup throws, like Jellyfin's placeholder row.</summary>
     public HashSet<Guid> ThrowingIds { get; } = [Guid.Parse("00000000000000000000000000000001")];
+
+    /// <summary>Running transcoding jobs by play session id.</summary>
+    public Dictionary<string, MediaBrowser.Controller.MediaEncoding.TranscodingJob> Jobs { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Adds a running transcoding job (optionally on a live stream).</summary>
+    public string AddJob(string? liveStreamId)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        Jobs[id] = new MediaBrowser.Controller.MediaEncoding.TranscodingJob(NullLogger<MediaBrowser.Controller.MediaEncoding.TranscodingJob>.Instance)
+        {
+            PlaySessionId = id,
+            LiveStreamId = liveStreamId,
+            MediaSource = new MediaBrowser.Model.Dto.MediaSourceInfo { LiveStreamId = liveStreamId },
+        };
+        return id;
+    }
+
+    /// <summary>A legacy "params" string with <paramref name="value"/> in field <paramref name="index"/>.</summary>
+    public static string Params(int index, string value)
+        => string.Join(';', Enumerable.Range(0, Math.Max(index + 1, 29)).Select(i => i == index ? value : string.Empty));
 
     /// <summary>Paths reported as active recordings.</summary>
     public HashSet<string> ActiveRecordingPaths { get; } = new(StringComparer.Ordinal);

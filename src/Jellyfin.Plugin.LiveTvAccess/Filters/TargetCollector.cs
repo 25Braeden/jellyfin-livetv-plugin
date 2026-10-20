@@ -39,7 +39,7 @@ public static class TargetCollector
         foreach (var (name, value) in context.ActionArguments)
         {
             var isRouteIdentifier = LiveTvEndpoints.RouteIdentifiers.Contains(name) && context.RouteData.Values.ContainsKey(name);
-            walker.Walk(value, isRouteIdentifier, 0);
+            walker.Walk(value, isRouteIdentifier, 0, name);
         }
 
         values = walker.Values;
@@ -63,7 +63,7 @@ public static class TargetCollector
 
         public bool Complete { get; private set; } = true;
 
-        public void Walk(object? value, bool isRouteIdentifier, int depth)
+        public void Walk(object? value, bool isRouteIdentifier, int depth, string? name = null)
         {
             if (!Complete || value is null)
             {
@@ -74,6 +74,22 @@ public static class TargetCollector
             {
                 Complete = false;
                 return;
+            }
+
+            // Arguments / properties with a known meaning, whatever their shape.
+            if (value is string named && name is not null)
+            {
+                if (string.Equals(name, "params", StringComparison.OrdinalIgnoreCase))
+                {
+                    WalkParams(named);
+                    return;
+                }
+
+                if (string.Equals(name, "playSessionId", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddPlaySession(named);
+                    return;
+                }
             }
 
             switch (value)
@@ -147,8 +163,58 @@ public static class TargetCollector
                     return;
                 }
 
-                Walk(child, false, depth + 1);
+                Walk(child, false, depth + 1, property.Name);
             }
+        }
+
+        /// <summary>
+        /// The legacy ";"-separated "params" string of the streaming / HLS endpoints, split exactly like
+        /// Jellyfin.Api/Helpers/StreamingHelpers.cs:389-560 (field 2 MediaSourceId, 20 PlaySessionId, 22 LiveStreamId).
+        /// Every field is inspected; field 20 is also looked up as a play session.
+        /// </summary>
+        private void WalkParams(string value)
+        {
+            string[] fields;
+            try
+            {
+                fields = value.Split(';');
+            }
+#pragma warning disable CA1031 // Can't parse it: fail closed.
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+                Complete = false;
+                return;
+            }
+
+            for (var i = 0; i < fields.Length && Complete; i++)
+            {
+                if (--_budget < 0)
+                {
+                    Complete = false;
+                    return;
+                }
+
+                if (i == 20)
+                {
+                    AddPlaySession(fields[i]);
+                }
+                else
+                {
+                    AddString(fields[i], false);
+                }
+            }
+        }
+
+        private void AddPlaySession(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            var guid = ProviderString.TryParseGuid(value, out var g) ? g : (Guid?)null;
+            Values.Add(new CollectedValue(guid?.ToString("N") ?? value, guid, false, ValueHint.PlaySessionId, value));
         }
 
         private void AddString(string text, bool isRouteIdentifier)

@@ -30,6 +30,8 @@ namespace Jellyfin.Plugin.LiveTvAccess.Filters;
 /// </summary>
 public class LiveTvAccessFilter : IAsyncActionFilter
 {
+    private static readonly Caller AnonymousCaller = new(Guid.Empty, IsApiKey: false, IsAdministrator: false, HasLiveTvAccess: false);
+
     private readonly AccessService _access;
     private readonly ISyncSignals _sync;
     private readonly ILogger<LiveTvAccessFilter> _logger;
@@ -53,10 +55,16 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
 
-        // Anonymous requests: Jellyfin's own authorization decides (streaming endpoints require auth).
+        // Anonymous callers get default-deny too: Jellyfin does NOT require auth on the stream endpoints
+        // (Jellyfin.Api/Controllers/VideosController.cs:312, AudioController.cs:89 have no [Authorize]), so an anonymous
+        // request naming a channel would otherwise stream it. They are treated as a caller with no user and no
+        // Live TV access; only image requests and the server-internal buffer URLs pass through unchecked.
         var started = Stopwatch.GetTimestamp();
         var caller = _access.GetCaller(context.HttpContext.User);
-        if (caller is { } c && !AccessPolicy.IsExempt(c) && !Admit(context, c, started))
+        var effective = caller ?? AnonymousCaller;
+        if (!AccessPolicy.IsExempt(effective)
+            && !(caller is null && LiveTvEndpoints.IsAnonymousPassThrough(context.ActionDescriptor as ControllerActionDescriptor))
+            && !Admit(context, effective, started))
         {
             return;
         }
@@ -139,7 +147,7 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         _logger.LogInformation(
             "LiveTvAccess: denied {Decision} user={UserId} {Method} {Route} {What}={Detail}",
             decision,
-            caller.UserId.ToString("N"),
+            caller.UserId == Guid.Empty ? "(anonymous)" : caller.UserId.ToString("N"),
             context.HttpContext.Request.Method,
             context.ActionDescriptor.AttributeRouteInfo?.Template ?? context.ActionDescriptor.DisplayName ?? "(unknown)",
             what,

@@ -10,6 +10,7 @@ using LiveTvAccess.Core;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging;
 
@@ -30,6 +31,7 @@ public class AccessService
     private readonly IMediaSourceManager _mediaSourceManager;
     private readonly IUserManager _userManager;
     private readonly IConfigurationManager _configurationManager;
+    private readonly ITranscodeManager _transcodeManager;
     private readonly ILogger<AccessService> _logger;
     private readonly object _lock = new();
     private AccessSnapshot? _snapshot;
@@ -43,14 +45,17 @@ public class AccessService
     /// <param name="mediaSourceManager">Instance of the <see cref="IMediaSourceManager"/> interface.</param>
     /// <param name="userManager">Instance of the <see cref="IUserManager"/> interface.</param>
     /// <param name="configurationManager">Instance of the <see cref="IConfigurationManager"/> interface.</param>
+    /// <param name="transcodeManager">Instance of the <see cref="ITranscodeManager"/> interface.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{AccessService}"/> interface.</param>
     public AccessService(
         ILibraryManager libraryManager,
         IMediaSourceManager mediaSourceManager,
         IUserManager userManager,
         IConfigurationManager configurationManager,
+        ITranscodeManager transcodeManager,
         ILogger<AccessService> logger)
     {
+        _transcodeManager = transcodeManager;
         _libraryManager = libraryManager;
         _mediaSourceManager = mediaSourceManager;
         _userManager = userManager;
@@ -99,9 +104,9 @@ public class AccessService
     }
 
     /// <summary>
-    /// Gets the caller from the request principal: <c>null</c> for anonymous requests (Jellyfin's own authorization
-    /// decides those). An authenticated principal without a usable user claim, or whose user no longer exists,
-    /// becomes a caller with no Live TV access, so it is denied rather than treated as anonymous.
+    /// Gets the caller from the request principal: <c>null</c> for anonymous requests (the filter then applies
+    /// default-deny to them as a caller with no user and no Live TV access). An authenticated principal without a
+    /// usable user claim, or whose user no longer exists, becomes a caller with no Live TV access too.
     /// </summary>
     /// <param name="principal">The request principal.</param>
     /// <returns>The caller, or <c>null</c> for anonymous requests.</returns>
@@ -172,6 +177,26 @@ public class AccessService
 
     private TargetInfo ClassifyCore(AccessSnapshot snapshot, Filters.CollectedValue value)
     {
+        // A play session id makes streaming reuse that session's transcoding job and its media source
+        // (Jellyfin.Api/Helpers/StreamingHelpers.cs:117-125). If the job is on a live stream, check that stream.
+        if (value.Hint == Filters.ValueHint.PlaySessionId)
+        {
+            var job = _transcodeManager.GetTranscodingJob(value.Raw ?? value.Text);
+            if (job is not null)
+            {
+                var jobStream = !string.IsNullOrEmpty(job.LiveStreamId) ? job.LiveStreamId : job.MediaSource?.LiveStreamId;
+                return string.IsNullOrEmpty(jobStream)
+                    ? new TargetInfo(TargetKind.NotLiveTv, null, false)
+                    : ClassifyStream(snapshot, jobStream, ProviderString.Classify(jobStream, out _));
+            }
+
+            if (value.Guid is null)
+            {
+                // Not a running session and not GUID-shaped: nothing to reuse.
+                return new TargetInfo(TargetKind.NotLiveTv, null, false);
+            }
+        }
+
         if (value.Guid is { } guid)
         {
             if (guid == Guid.Empty)
@@ -206,23 +231,7 @@ public class AccessService
 
             case ProviderStringKind.LiveTvStreamId:
             case ProviderStringKind.OtherProvider:
-                var stream = _mediaSourceManager.GetLiveStreamInfo(value.Text.Trim());
-                if (stream is null)
-                {
-                    return new TargetInfo(TargetKind.Unresolved, null, true);
-                }
-
-                if (string.IsNullOrEmpty(stream.TunerHostId))
-                {
-                    // An open stream that isn't on a tuner (another provider). A Live TV stream without a tuner
-                    // is unexpected: fail closed.
-                    return new TargetInfo(
-                        ProviderString.Classify(value.Text, out _) == ProviderStringKind.OtherProvider ? TargetKind.NotLiveTv : TargetKind.Unresolved,
-                        null,
-                        true);
-                }
-
-                return new TargetInfo(TargetKind.LiveTv, TunerOfHost(snapshot, stream.TunerHostId), true);
+                return ClassifyStream(snapshot, value.Text, ProviderString.Classify(value.Text, out _));
 
             default:
                 return new TargetInfo(value.IsRouteIdentifier ? TargetKind.Unresolved : TargetKind.NotLiveTv, null, value.IsRouteIdentifier);
@@ -257,6 +266,28 @@ public class AccessService
         var path = item.Path.Replace('\\', '/');
         return roots.Any(root => !string.IsNullOrWhiteSpace(root)
             && path.StartsWith(root.Replace('\\', '/').TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Classifies a live stream id (or other provider-prefixed string): it must be open; a tuner stream is placed on
+    /// its tuner; an open stream of another provider without a tuner isn't Live TV.
+    /// </summary>
+    private TargetInfo ClassifyStream(AccessSnapshot snapshot, string streamId, ProviderStringKind kind)
+    {
+        var stream = _mediaSourceManager.GetLiveStreamInfo(streamId.Trim());
+        if (stream is null)
+        {
+            return new TargetInfo(TargetKind.Unresolved, null, true);
+        }
+
+        if (string.IsNullOrEmpty(stream.TunerHostId))
+        {
+            // An open stream that isn't on a tuner (another provider). A Live TV stream without a tuner is
+            // unexpected: fail closed.
+            return new TargetInfo(kind == ProviderStringKind.OtherProvider ? TargetKind.NotLiveTv : TargetKind.Unresolved, null, true);
+        }
+
+        return new TargetInfo(TargetKind.LiveTv, TunerOfHost(snapshot, stream.TunerHostId), true);
     }
 
     private string? TunerOfHost(AccessSnapshot snapshot, string tunerHostId)

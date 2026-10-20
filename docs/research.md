@@ -456,3 +456,40 @@ unknown and placeholder route ids, unknown-provider tokens and a missing open to
 playback, images and audio streaming still work for A and for C (no tuner).
 
 All 15 review findings reproduced in phase 1 are now fixed; no tests carry `Category=KnownIssue`.
+
+## Gate 3.5 phase 2, fix 5b: anonymous callers, legacy params, play sessions (2026-10-19)
+
+The independent check after fix 5 found that anonymous requests bypassed the filter entirely. Reproduced live:
+`GET /Videos/{tuner-2 channel}/stream?static=true` with no auth returned 200 and video.
+
+- **Anonymous callers (HIGH, fixed).** Jellyfin doesn't require auth on the progressive stream endpoints
+  (`VideosController.cs:38/312`, `AudioController.cs:19/89` have no `[Authorize]`, and no fallback policy is set),
+  so the filter's old comment "streaming endpoints require auth" was wrong. Anonymous callers now get default-deny
+  as a caller with no user and no Live TV access: any route, query, header or body identifier that resolves to a Live
+  TV channel, program, stream, recording or play session, or looks like a Live TV token or stream id, gets the same
+  generic 403. Anonymous requests that don't name Live TV are unaffected (public info, branding, login, library
+  streams). Two exceptions pass anonymously unchecked:
+  - **ImageController**, accepted (user decision): channel logos and programme art stay readable without auth
+    because clients load images without auth headers. Metadata only.
+  - **`LiveTv/LiveStreamFiles` and `LiveTv/LiveRecordings`**: Jellyfin's own ffmpeg reads these buffer URLs without
+    auth. They are unchanged; restricting them is fix 6. Their ids are random.
+  - `DynamicHlsController` has a class-level `[Authorize]` (`DynamicHlsController.cs:40`), so Jellyfin rejects anonymous
+    HLS itself (401).
+- **Legacy `params` (HIGH, fixed).** The streaming / HLS endpoints accept a `;`-separated `params` string that sets
+  MediaSourceId (field 2), PlaySessionId (field 20) and LiveStreamId (field 22) (`StreamingHelpers.cs:389-560`). The
+  collector now splits it exactly like Jellyfin and inspects every field; field 22 is resolved like any stream id,
+  field 20 as a play session. Jellyfin's split can't fail, so there is no "unparseable" input; any unexpected error
+  while splitting is denied. Live: A asking for its own movie with B's stream id in field 22 gets 403; with A's own
+  stream id it plays.
+- **Play session reuse (LOW, fixed: cheap and safe).** A play session id makes streaming reuse that session's
+  transcoding job and its media source (`StreamingHelpers.cs:117-125`). Any play-session value (query `playSessionId`,
+  `params` field 20, body `PlaySessionId`; any string, since Jellyfin accepts client-chosen ids) is looked up with
+  `ITranscodeManager.GetTranscodingJob`. If the job is on a live stream, that stream's tuner is checked. This enforces
+  the tuner, not the exact session owner. Attaching to another user's job on your own tuner is moot, because only you
+  use that tuner. Live: A with B's live HLS play session id gets 403.
+- **Anonymous channel logos / programme art (LOW, accepted).** Readable without auth, as above. Metadata only;
+  no stream.
+
+Acceptance: `gate3_test.py` 104/104 (section 15 adds anonymous stream attempts on tuner 1 and tuner 2 with and without
+`static=true`, anonymous regressions, params field 22, play session reuse, and the LiveStreamFiles buffer plus `.ts`
+playback through it).

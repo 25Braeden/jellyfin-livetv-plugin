@@ -48,4 +48,23 @@ public static class LiveTvEndpoints
         "itemId", "routeItemId", "channelId", "programId", "recordingId", "seriesId", "videoId",
         "collectionId", "streamId", "timerId",
     };
+
+    /// <summary>
+    /// Gets whether an anonymous request to this action skips the checks:
+    /// <list type="bullet">
+    /// <item>ImageController (accepted, user decision: clients load images without auth; channel logos and
+    /// programme art are metadata only).</item>
+    /// <item>The server-internal buffer URLs Jellyfin's own ffmpeg reads without auth (LiveTvController.cs:1162,
+    /// :1189). Their ids are random; restricting them is fix 6.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="action">The action, if it is a controller action.</param>
+    /// <returns><c>true</c> to let an anonymous request through unchecked.</returns>
+    public static bool IsAnonymousPassThrough(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action)
+    {
+        return action is not null
+            && (string.Equals(action.ControllerName, "Image", StringComparison.Ordinal)
+                || (string.Equals(action.ControllerName, LiveTvController, StringComparison.Ordinal)
+                    && action.ActionName is "GetLiveStreamFile" or "GetLiveRecordingFile"));
+    }
 }
