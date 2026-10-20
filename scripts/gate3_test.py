@@ -879,6 +879,26 @@ def main():
     st, body = A21.post("/LiveTv/Programs", {"UserId": a21u, "Limit": 500})
     check("Q1: A POST /LiveTv/Programs {UserId: A} = own guide", st == 200 and tuner2_programmes(st, body) == 0 and len(body.get("Items", [])) > 0, f"HTTP {st}")
 
+    # Q5: a dangling name-only entry is dropped at save, so a later self-rename can't claim it.
+    C21, c21u, _ = n.login("C", "gate3-C-final")
+    try:
+        cfg21 = n.ok(admin.get(f"/Plugins/{PLUGIN_ID}/Configuration"), "cfg")
+        cfg21["Users"] = cfg21["Users"] + [{"UserName": "Dad", "TunerKey": "tuner2"}]
+        admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", cfg21)
+        stored = n.ok(admin.get(f"/Plugins/{PLUGIN_ID}/Configuration"), "cfg")["Users"]
+        check("Q5: name-only entry for a non-existent user is dropped at save", not any(u["UserName"] == "Dad" for u in stored), str(stored))
+        me = n.ok(C21.get(f"/Users/{c21u}"), "me")
+        me["Name"] = "Dad"
+        check("Q5: non-admin C renames self to 'Dad' (Jellyfin allows it)", C21.post(f"/Users/{c21u}", me)[0] == 204)
+        admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", n.ok(admin.get(f"/Plugins/{PLUGIN_ID}/Configuration"), "cfg"))
+        stored = n.ok(admin.get(f"/Plugins/{PLUGIN_ID}/Configuration"), "cfg")["Users"]
+        check("Q5: admin re-save after the rename maps nobody to C", not any(u["UserId"].replace("-", "") == c21u.replace("-", "") for u in stored), str(stored))
+    finally:
+        me = n.ok(C21.get(f"/Users/{c21u}"), "me")
+        me["Name"] = "C"
+        C21.post(f"/Users/{c21u}", me)
+        admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", CONFIG)
+
     print("== 10. logging")
     time.sleep(1)
     log = subprocess.run(["docker", "logs", "--since", since, "jellyfin-dev"], capture_output=True, text=True)

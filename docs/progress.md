@@ -28,6 +28,7 @@
 | 2026-10-20 | Final review R5: failed mid-pass user sync re-queued (Sol #2) | 4be4469 | unit green; Gate 3 at the end of the series |
 | 2026-10-20 | Final review R6: failed owned-tag history save no longer breaks the snapshot (Argon #4) | bad9478 | unit green; Gate 3 at the end of the series |
 | 2026-10-20 | Final review R7: history tags stay blocked while channels are re-tagged after a key rename (Q3) | 750541e | unit green; Gate 3 at the end of the series |
+| 2026-10-20 | Final review R8: unresolvable name-only user entries dropped at save (Q5) | 8e34aa3 | unit green; Gate 3 at the end of the series |
 
 ## Scale test (16,000 channels), 2026-10-19
 

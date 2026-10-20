@@ -100,7 +100,7 @@ An installed but unconfigured plugin **denies Live TV to every non-admin**: it f
 **Option A (recommended): pre-seed the config file, so there's no gap at all.** Write
 `Jellyfin.Plugin.LiveTvAccess.xml` on your machine from this template, using the exact tuner URLs and the user IDs.
 User entries need the **ID**: a pre-seeded file isn't processed by the config API, so names alone are not resolved,
-and entries without an ID are skipped.
+and entries without an ID are skipped (and dropped at the next save if no user has that name).
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>

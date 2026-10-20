@@ -89,6 +89,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         config.Users ??= [];
         config.Tuners ??= [];
+        var dropped = new List<UserTunerConfig>();
         foreach (var entry in config.Users)
         {
             if (entry is null)
@@ -115,12 +116,20 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             var byName = string.IsNullOrWhiteSpace(entry.UserName) ? null : _userManager.GetUserByName(entry.UserName);
             if (byName is null)
             {
-                _logger.LogWarning("LiveTvAccess: configured user '{UserName}' does not exist; entry kept without an id (no access)", entry.UserName);
+                // Don't keep it: a later save would resolve the name to whoever has renamed themselves to it
+                // (non-admins can rename themselves, UserController.cs:388-395).
+                _logger.LogWarning("LiveTvAccess: configured user '{UserName}' does not exist; entry dropped", entry.UserName);
+                dropped.Add(entry);
                 continue;
             }
 
             entry.UserId = byName.Id;
             entry.UserName = byName.Username;
+        }
+
+        if (dropped.Count > 0)
+        {
+            config.Users = config.Users.Where(e => !dropped.Contains(e)).ToArray();
         }
     }
 }

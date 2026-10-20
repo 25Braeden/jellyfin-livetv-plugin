@@ -963,3 +963,16 @@ channels pass took ~53 s).
 **Remaining, accepted:** *swapping* the URLs of two keys can't be covered by tags. A's key then points at the other
 URL, and channels still tagged with A's key show in A's listings until re-tagged. Playback is still denied by the
 filter, and this only happens during an admin reconfiguration.
+
+### R8. Dangling name-only user entries are dropped at save (independent review Q5)
+
+**Confirmed live.**
+1. The admin saved `{UserName: "Dad", TunerKey: "tuner2"}` while no user "Dad" existed; it was stored without an id.
+2. Non-admin C renamed themselves to "Dad". Jellyfin allows self-rename with preference access
+   (`UserController.cs:388-395`, `RequestHelpers.cs:94-111`).
+3. The admin re-saved the config unchanged, and the entry resolved to **C's id, granting C tuner 2**.
+
+**Fix:** `Plugin.ResolveUserIds` drops a name-only entry that matches no user (with a warning) instead of keeping it,
+so nothing is left to resolve later. Entries for existing users still resolve by name at save time (the admin's
+explicit action), and id entries are unchanged. The settings page always sends ids. Tests failed first. Gate 3
+section 21 repeats the exact flow.
