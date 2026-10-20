@@ -22,15 +22,15 @@
 | 2026-10-20 | Step 3: admin settings page (tuners, user mapping, self-check status) | 1e7d5d5 | 206/206 acceptance |
 | 2026-10-20 | Step 4: deploy runbook, overlap check, release packaging, self-healing guide fixture, review files | eca64bc | 208/208 acceptance |
 | 2026-10-20 | Final review R1: static exemption only from liveStreamId / params 22 (Sol #1, Argon #6) | 5b82786 | 212/212 acceptance |
-| 2026-10-20 | Final review R2: Live TV listings bound to the caller (POST LiveTv/Programs, Q1) | 67f2bc9 | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R3: self-check accepts only scrubber-handled response shapes; unexpected shapes refused (Sol #3) | 9a28d86 | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R4: duplicate-tuner warning logs host + hash, not the URL (Sol #4) | 5452670 | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R5: failed mid-pass user sync re-queued (Sol #2) | b2cf198 | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R6: failed owned-tag history save no longer breaks the snapshot (Argon #4) | 80d1d96 | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R7: history tags stay blocked while channels are re-tagged after a key rename (Q3) | ed98e8e | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R8: unresolvable name-only user entries dropped at save (Q5) | 26b90c4 | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R9: a play session id doesn't satisfy LiveStreams/Open's target rule (Q6) | see git log | unit green; Gate 3 at the end of the series |
-| 2026-10-20 | Final review R10: status API refreshes don't reset the claim-evidence window (Q8) | see git log | unit green; Gate 3 at the end of the series |
+| 2026-10-20 | Final review R2: Live TV listings bound to the caller (POST LiveTv/Programs, Q1) | 67f2bc9 | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R3: self-check accepts only scrubber-handled response shapes; unexpected shapes refused (Sol #3) | 9a28d86 | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R4: duplicate-tuner warning logs host + hash, not the URL (Sol #4) | 5452670 | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R5: failed mid-pass user sync re-queued (Sol #2) | b2cf198 | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R6: failed owned-tag history save no longer breaks the snapshot (Argon #4) | 80d1d96 | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R7: history tags stay blocked while channels are re-tagged after a key rename (Q3) | ed98e8e | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R8: unresolvable name-only user entries dropped at save (Q5) | 26b90c4 | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R9: a play session id doesn't satisfy LiveStreams/Open's target rule (Q6) | 1acf78b | Gate 3 219/219 (run on R10) |
+| 2026-10-20 | Final review R10: status API refreshes don't reset the claim-evidence window (Q8) | b93e9e0 | Gate 3 219/219 (run on R10) |
 
 ## Scale test (16,000 channels), 2026-10-19
 
@@ -47,3 +47,4 @@
 | **Jellyfin guide refresh** | **Impractical at this size: quadratic in channel count (Jellyfin, not the plugin). See research.md.** |
 
 Recommendation: import only the channels you want; see research.md for options.
+| 2026-10-20 | Final review: full findings table (docs) | see git log | Gate 3 219/219 |

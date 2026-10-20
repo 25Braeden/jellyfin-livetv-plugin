@@ -998,3 +998,27 @@ scheduled run, with no new evidence, is Healthy.
   closed: unrecognized principals get no Live TV, and an API key without its claim isn't exempt.
 - The registration check confirms the filter is in `MvcOptions`, not that it runs on every route. The plugin can't see
   requests the filter doesn't see. `RequestsChecked` is shown in the status for a human to compare.
+
+### Final review: all findings
+
+| # | Source | Finding | Status | Evidence | Fix |
+|---|---|---|---|---|---|
+| Sol #1 | ChatGPT | Unrelated argument (`deviceId=<own open stream>`) made a static request "tracked" | CONFIRMED (live: 200 + upstream request) | `LiveTvAccessFilter` old tracked loop; `StreamingHelpers.cs:116, 141-143` | R1 `5b82786` |
+| Argon #6 | Gemini | `params` field 3 `" true "` | NOT REPRODUCIBLE as a bypass (Jellyfin: `Equals("true")`, live 409); hardened anyway | `StreamingHelpers.cs:417-418` | R1 `5b82786` |
+| Q1 | Subagent | `POST /LiveTv/Programs` with `{}` or another user's id lists other tuners' guide | CONFIRMED (live: 147 tuner-2 programmes) | `LiveTvController.cs:654-658` vs `RequestHelpers.cs:67-85` | R2 `67f2bc9` |
+| Sol #3 | ChatGPT | Self-check accepted wrapper response types the scrubber ignores | CONFIRMED (code) | `EndpointContract.Mentions`; scrubber `default` | R3 `9a28d86` |
+| Sol #4 | ChatGPT | Duplicate-tuner warning logged the full URL | CONFIRMED (code + test) | `TunerCatalog.cs:120` | R4 `5452670` |
+| Sol #2a | ChatGPT | Failed mid-pass user sync lost its dirty flag | CONFIRMED (code + test) | `TagSyncService.cs:391, 237-240` | R5 `b2cf198` |
+| Sol #2b | ChatGPT | No `SetPreference` rollback on a failed save | NOT REPRODUCIBLE (Jellyfin reloads users from the DB) | `UserManager.cs:99-104` | — |
+| Argon #4 | Gemini | Failed history save inside the snapshot lock broke every request | CONFIRMED (code + unit test; not live) | `AccessService.Build`; `BasePluginOfT.cs:143-151` | R6 `80d1d96` |
+| Q3 | Subagent | Key rename: old tag unblocked before channels re-tagged | CONFIRMED (code + test; live window ms) | `TagSyncService.cs:287-289`; `TagOwnership.cs:51-53` | R7 `ed98e8e` |
+| Q5 | Subagent | Dangling name-only entry claimed by a self-renaming user | CONFIRMED (live: C granted tuner 2) | `Plugin.ResolveUserIds`; `UserController.cs:388-395` | R8 `26b90c4` |
+| Q6 | Subagent | Play session id satisfied the must-name-a-target rule | CONFIRMED (live: 400 instead of 403; no impact) | `LiveTvAccessFilter` resolvedTarget | R9 `1acf78b` |
+| Q8 | Subagent | API refreshes reset the claim-evidence window; partial drift; registration-only check | CONFIRMED (window); limits documented | `SelfCheckService.CheckClaims` | R10 `b93e9e0` |
+| Q2 | Subagent | Up to ~16k GUID lookups per request (CPU/DB amplification) | CONFIRMED (live: 10k GUIDs = 2.65 s vs 0.05 s) | `TargetCollector` budget 50k; per-value `GetItemById` | **Open: needs owner decision** |
+| Q4 | Subagent | Twin channels opened at the same moment share across tuners | CONFIRMED (live, 1st attempt; precondition: same URL on both tuners, warn-only) | check-then-act in `EffectiveTuner` | **Open: needs owner decision** |
+| Argon #1 | Gemini | Auto-opened HLS job has no `LiveStreamId`, so another user can read it | NOT REPRODUCIBLE (live: B 403) | `TranscodeManager.cs:383, 437-440, 663-674`; `LiveTvMediaSourceProvider.cs:303` | — |
+| Argon #2 | Gemini | Channel `Path` / `CurrentProgram.MediaSources` unscrubbed | NOT REPRODUCIBLE (live: none present) | `DtoService.cs:258-261`; `LiveTvProgram.cs:22`; `GuideManager` | — |
+| Argon #3 | Gemini | Status refresh / duplicate lookup cost | NOT REPRODUCIBLE as a vulnerability (admin-only, serialized by `_gate`, 30 s bound) | `SelfCheckService` | — |
+| Argon #5 | Gemini | Dictionary / JSON property names not passed (`playSessionId`, `params`) | NOT REPRODUCIBLE (`streamOptions` only feeds codec options; the named params bind separately) | `EncodingJobInfo.cs:578-656` | — |
+| Q7 | Subagent | Framework containers (`JsonDocument`, `KeyValuePair`) not walked | NOT REPRODUCIBLE (only `JsonDocument` binder is admin-only) | `ConfigurationController.cs:94-96` | — |
