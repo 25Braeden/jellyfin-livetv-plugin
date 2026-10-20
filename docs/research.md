@@ -1015,10 +1015,32 @@ scheduled run, with no new evidence, is Healthy.
 | Q5 | Subagent | Dangling name-only entry claimed by a self-renaming user | CONFIRMED (live: C granted tuner 2) | `Plugin.ResolveUserIds`; `UserController.cs:388-395` | R8 `26b90c4` |
 | Q6 | Subagent | Play session id satisfied the must-name-a-target rule | CONFIRMED (live: 400 instead of 403; no impact) | `LiveTvAccessFilter` resolvedTarget | R9 `1acf78b` |
 | Q8 | Subagent | API refreshes reset the claim-evidence window; partial drift; registration-only check | CONFIRMED (window); limits documented | `SelfCheckService.CheckClaims` | R10 `b93e9e0` |
-| Q2 | Subagent | Up to ~16k GUID lookups per request (CPU/DB amplification) | CONFIRMED (live: 10k GUIDs = 2.65 s vs 0.05 s) | `TargetCollector` budget 50k; per-value `GetItemById` | **Open: needs owner decision** |
+| Q2 | Subagent | Up to ~16k GUID lookups per request (CPU/DB amplification) | CONFIRMED (live: 10k GUIDs = 2.65 s vs 0.05 s) | `TargetCollector` budget 50k; per-value `GetItemById` | R11 (see git log) |
 | Q4 | Subagent | Twin channels opened at the same moment share across tuners | CONFIRMED (live, 1st attempt; precondition: same URL on both tuners, warn-only) | check-then-act in `EffectiveTuner` | **Open: needs owner decision** |
 | Argon #1 | Gemini | Auto-opened HLS job has no `LiveStreamId`, so another user can read it | NOT REPRODUCIBLE (live: B 403) | `TranscodeManager.cs:383, 437-440, 663-674`; `LiveTvMediaSourceProvider.cs:303` | — |
 | Argon #2 | Gemini | Channel `Path` / `CurrentProgram.MediaSources` unscrubbed | NOT REPRODUCIBLE (live: none present) | `DtoService.cs:258-261`; `LiveTvProgram.cs:22`; `GuideManager` | — |
 | Argon #3 | Gemini | Status refresh / duplicate lookup cost | NOT REPRODUCIBLE as a vulnerability (admin-only, serialized by `_gate`, 30 s bound) | `SelfCheckService` | — |
 | Argon #5 | Gemini | Dictionary / JSON property names not passed (`playSessionId`, `params`) | NOT REPRODUCIBLE (`streamOptions` only feeds codec options; the named params bind separately) | `EncodingJobInfo.cs:578-656` | — |
 | Q7 | Subagent | Framework containers (`JsonDocument`, `KeyValuePair`) not walked | NOT REPRODUCIBLE (only `JsonDocument` binder is admin-only) | `ConfigurationController.cs:94-96` | — |
+
+### R11. Cap on distinct identifiers per request (independent review Q2, owner decision)
+
+**Measured live before the fix:** a non-admin PlaybackInfo body with 10,000 random GUIDs took 2.65 s, against 0.05 s
+for the same body with non-GUID strings. The filter resolved every value with a library lookup and a user lookup. The
+existing 50,000-node walk budget allowed roughly 16,000 per request.
+
+**Fix:**
+- The collector deduplicates values (repeats are resolved once).
+- `TargetCollector.MaxDistinctIdentifiers = 1000`: above that, the request gets the generic 403
+  (`AccessDecision.DenyTooManyIdentifiers`) before any lookup.
+- Admins and API keys are exempt, as everywhere else.
+
+**Live:**
+- Home page calls, library browsing and PlaybackInfo are unaffected.
+- A 1,500-entry playlist and a progress report with a 1,500-entry queue of repeated items work.
+- 10,000 random GUIDs get 403 in 83 ms.
+
+**Known consequence (accepted with the decision):** a request with more than 1,000 *distinct* item ids is refused.
+The realistic case is a playback progress report whose now-playing queue holds over 1,000 distinct items (a large
+queue in a large library); it gets 403. Playback continues, but that session's progress and now-playing state aren't
+saved. Not observed with a real client here (the local library has two items); simulated live.

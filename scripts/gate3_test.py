@@ -879,6 +879,16 @@ def main():
     st, body = A21.post("/LiveTv/Programs", {"UserId": a21u, "Limit": 500})
     check("Q1: A POST /LiveTv/Programs {UserId: A} = own guide", st == 200 and tuner2_programmes(st, body) == 0 and len(body.get("Items", [])) > 0, f"HTTP {st}")
 
+    # Q2: at most 1000 distinct identifiers resolved per request; 10,000 random GUIDs get a fast 403.
+    lib21 = library_fixture.main()
+    big = [uuid.uuid4().hex for _ in range(10000)]
+    t0 = time.time()
+    st, body = A21.post(f"/Items/{lib21['Movie']}/PlaybackInfo", {"UserId": a21u, "DeviceProfile": {"DirectPlayProfiles": [{"Container": v, "Type": "Video"} for v in big]}})
+    took = time.time() - t0
+    check("Q2: 10,000 random GUIDs in one request = fast 403", st == 403 and text((st, body)) == DENIED and took < 1.0, f"HTTP {st} in {took * 1000:.0f} ms")
+    st, _ = A21.post(f"/Items/{lib21['Movie']}/PlaybackInfo", {"UserId": a21u, "DeviceProfile": {"DirectPlayProfiles": [{"Container": lib21["Movie"], "Type": "Video"}] * 3000}})
+    check("Q2: 3,000 repeats of one id count once (allowed)", st == 200, f"HTTP {st}")
+
     # Q6: a play session id isn't the target LiveStreams/Open must name.
     st, body = A21.post("/LiveStreams/Open", {}, playSessionId="x")
     check("Q6: A POST /LiveStreams/Open?playSessionId=x (no token) = 403 from the plugin", st == 403 and text((st, body)) == DENIED, f"HTTP {st}")

@@ -41,4 +41,7 @@ public enum AccessDecision
 
     /// <summary>A server-internal live buffer URL requested by someone other than the server itself.</summary>
     DenyBufferNotLocal,
+
+    /// <summary>More distinct identifiers in one request than the filter resolves (resource cap).</summary>
+    DenyTooManyIdentifiers,
 }

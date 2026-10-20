@@ -157,6 +157,12 @@ public class LiveTvAccessFilter : IAsyncActionFilter
             return Deny(context, caller, AccessDecision.DenyUnresolved, "request", "too large or deep to inspect", started, values.Count);
         }
 
+        // Each distinct identifier can cost a library and a user lookup: cap the work one request can cause.
+        if (values.Count > TargetCollector.MaxDistinctIdentifiers)
+        {
+            return Deny(context, caller, AccessDecision.DenyTooManyIdentifiers, "request", $"{values.Count} distinct identifiers", started, values.Count);
+        }
+
         var resolvedTarget = false;
         var namesLiveTvItem = false;
         foreach (var value in values)

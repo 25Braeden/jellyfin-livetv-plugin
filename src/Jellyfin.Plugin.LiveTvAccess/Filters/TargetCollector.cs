@@ -20,6 +20,12 @@ public static class TargetCollector
     /// <summary>Maximum values visited per request; beyond this the request is denied (fail closed).</summary>
     public const int MaxNodes = 50_000;
 
+    /// <summary>
+    /// Maximum distinct identifiers resolved per request (each can cost a library and a user lookup); above this the
+    /// request is denied before any lookup (final review Q2).
+    /// </summary>
+    public const int MaxDistinctIdentifiers = 1000;
+
     /// <summary>Maximum nesting depth followed into body objects; deeper is denied (fail closed).</summary>
     public const int MaxDepth = 8;
 
@@ -42,7 +48,25 @@ public static class TargetCollector
             walker.Walk(value, isRouteIdentifier, 0, name);
         }
 
-        values = walker.Values;
+        // Each distinct value is resolved once: repeats add nothing.
+        var seen = new HashSet<(string, Guid?, ValueHint)>();
+        var distinct = new List<CollectedValue>();
+        var routeIds = new HashSet<(string, Guid?, ValueHint)>();
+        foreach (var value in walker.Values)
+        {
+            var key = (value.Text, value.Guid, value.Hint);
+            if (value.IsRouteIdentifier)
+            {
+                routeIds.Add(key);
+            }
+
+            if (seen.Add(key))
+            {
+                distinct.Add(value);
+            }
+        }
+
+        values = distinct.Select(v => !v.IsRouteIdentifier && routeIds.Contains((v.Text, v.Guid, v.Hint)) ? v with { IsRouteIdentifier = true } : v).ToArray();
         return walker.Complete;
     }
 
