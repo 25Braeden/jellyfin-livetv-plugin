@@ -895,3 +895,18 @@ Gate 3 section 21.
 **Live:** the self-check is Healthy against the real 30 endpoints. A's PlaybackInfo, LiveStreams/Open, channel, program
 and recommended listings, POST Programs, Sessions, and both config keys still return 200. No "unexpected response
 shape" errors were logged.
+
+### R4. No tuner URL in the duplicate-tuner warning (Sol #4)
+
+**Confirmed in code:** `TunerCatalog.FromEntries` logged `('{key}', {url})` for duplicate entries
+(`TunerCatalog.cs:120`), and the URL can carry provider credentials. It now logs `Redact.Location(url)` (scheme and
+host) and `Redact.ShortHash(url)`.
+
+**Codebase grep** for every `Log*` / `warn(` call that mentions a URL, path or host: the remaining ones carry no URL
+value. They are:
+- "has no URL";
+- the scrubber's "could not hide upstream URLs";
+- the self-check's host-lookup failure, which logs only the exception type;
+- the startup version line.
+
+Denial logs carry GUIDs, or a short hash for anything else (fix 5d); self-check hosts are redacted (fix 7).

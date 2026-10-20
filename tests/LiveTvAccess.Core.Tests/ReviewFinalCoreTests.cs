@@ -55,3 +55,26 @@ public class ReviewFinalCoreTests
         Assert.Equal(expected, StaticStreamRequest.EffectiveLiveStreamId(argument, field22 is null ? null : Params((22, field22))));
     }
 }
+
+/// <summary>Final review, Sol #4: tuner warnings never contain the tuner URL.</summary>
+public class ReviewFinalLoggingTests
+{
+    [Fact]
+    public void DuplicateTunerWarning_ShowsLocationAndHash_NotTheUrl()
+    {
+        const string Url = "http://alice:secret@provider.example/get.php?username=alice&password=secret";
+        var warnings = new System.Collections.Generic.List<string>();
+        TunerCatalog.FromEntries([new TunerEntry("t1", Url), new TunerEntry("t2", Url), new TunerEntry("t1", "/x.m3u")], warnings.Add);
+
+        Assert.NotEmpty(warnings);
+        foreach (var warning in warnings)
+        {
+            Assert.DoesNotContain("secret", warning, System.StringComparison.Ordinal);
+            Assert.DoesNotContain("alice", warning, System.StringComparison.Ordinal);
+            Assert.DoesNotContain("get.php", warning, System.StringComparison.Ordinal);
+            Assert.DoesNotContain("/x.m3u", warning, System.StringComparison.Ordinal);
+        }
+
+        Assert.Contains(warnings, w => w.Contains("http://provider.example", System.StringComparison.Ordinal) && w.Contains(Redact.ShortHash(Url), System.StringComparison.Ordinal));
+    }
+}

@@ -117,7 +117,8 @@ public sealed class TunerCatalog
         {
             if (dupKeys.Contains(key) || dupUrls.Contains(url))
             {
-                warn($"tuner entry #{i} ('{key}', {url}) duplicates another entry's key or URL; skipped");
+                // Never the URL itself: providers put credentials in it.
+                warn($"tuner entry #{i} ('{key}', {Redact.Location(url)} {Redact.ShortHash(url)}) duplicates another entry's key or URL; skipped");
                 continue;
             }
 
