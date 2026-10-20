@@ -16,6 +16,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -685,6 +686,26 @@ def main():
               and dup["Tuners"] == ["tuner1", "tuner2"], str(dup))
         check("self-check: no stream path, query or tuner file in the status",
               st == 200 and parts.path not in json.dumps(s7) and "ch=" not in json.dumps(s7) and "/tuners/" not in json.dumps(s7))
+        # Final review Q4: A and B open the twins at the same moment; opens are serialized, so the second opener
+        # sees the first's stream on the other tuner and is refused, never handed it.
+        for attempt in range(3):
+            res = {}
+
+            def race(name, api, uid, ch):
+                res[name] = api.post(f"/Items/{ch}/PlaybackInfo", {"UserId": uid, "AutoOpenLiveStream": True}, userId=uid)
+
+            racers = [threading.Thread(target=race, args=("A", A7, a7u, news)), threading.Thread(target=race, args=("B", B7, b7u, twin))]
+            [r.start() for r in racers]
+            [r.join() for r in racers]
+            ids = {k: ((v[1].get("MediaSources") or [{}])[0].get("LiveStreamId") if v[0] == 200 else None) for k, v in res.items()}
+            check(f"Q4 concurrent twin opens #{attempt + 1}: one 200, one 403, no stream shared across tuners",
+                  sorted([res["A"][0], res["B"][0]]) == [200, 403] and not (ids["A"] and ids["A"] == ids["B"]),
+                  f"A {res['A'][0]}, B {res['B'][0]}")
+            for k, api in (("A", A7), ("B", B7)):
+                if ids[k]:
+                    api.post("/LiveStreams/Close", liveStreamId=ids[k])
+            time.sleep(3)
+
         st_b, ms_b, ps_b = n.open_channel(B7, b7u, twin)
         try:
             st, _ = A7.post(f"/Items/{news}/PlaybackInfo", {"UserId": a7u, "AutoOpenLiveStream": True}, userId=a7u)

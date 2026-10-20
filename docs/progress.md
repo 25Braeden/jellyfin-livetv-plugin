@@ -49,3 +49,4 @@
 Recommendation: import only the channels you want; see research.md for options.
 | 2026-10-20 | Final review: full findings table (docs) | see git log | Gate 3 219/219 |
 | 2026-10-20 | Final review R11: cap of 1000 distinct identifiers per request (Q2) | see git log | unit green; live checks; Gate 3 at the end |
+| 2026-10-20 | Final review R12: opens of the same channel / stream serialized (Q4); overlap check is a go-live hard stop | see git log | unit green; live 5/5; Gate 3 at the end |

@@ -73,6 +73,33 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         var caller = _access.GetCaller(context.HttpContext.User);
         var effective = caller ?? AnonymousCaller;
         var action = context.ActionDescriptor as ControllerActionDescriptor;
+
+        // Opening a channel: hold the channel's and its media source's lock across the tuner check and the open
+        // (final review Q4). Admins take it too: their open can race a user's check.
+        var (admitted, openingLock) = await AcquireOpeningLockAsync(context, action, effective).ConfigureAwait(false);
+        if (!admitted)
+        {
+            return;
+        }
+
+        try
+        {
+            await ExecuteAsync(context, next, caller, effective, action, started).ConfigureAwait(false);
+        }
+        finally
+        {
+            openingLock?.Dispose();
+        }
+    }
+
+    private async Task ExecuteAsync(
+        ActionExecutingContext context,
+        ActionExecutionDelegate next,
+        Caller? caller,
+        Caller effective,
+        ControllerActionDescriptor? action,
+        long started)
+    {
         if (LiveTvEndpoints.IsBuffer(action))
         {
             if (!AdmitBuffer(context, effective, started))
@@ -112,6 +139,42 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         {
             _sync.MarkUsersDirty("user write " + context.ActionDescriptor.AttributeRouteInfo?.Template);
         }
+    }
+
+    /// <summary>
+    /// Takes the opening lock for a request that can open a Live TV stream: an opening action without a live stream
+    /// id (with one, Jellyfin uses that open stream and opens nothing, TranscodeManager.cs:663-664), naming a channel,
+    /// program or open token. Returns <c>(false, null)</c> after setting a 403 if the wait timed out.
+    /// </summary>
+    private async Task<(bool Admitted, IDisposable? Lock)> AcquireOpeningLockAsync(ActionExecutingContext context, ControllerActionDescriptor? action, Caller caller)
+    {
+        if (!LiveTvEndpoints.IsOpening(action)
+            || LiveTvEndpoints.UsesOpenStream(action, context.ActionArguments)
+            || !TargetCollector.TryCollect(context, out var values)
+            || values.Count > TargetCollector.MaxDistinctIdentifiers)
+        {
+            // Not an open, or the request is refused by the checks anyway.
+            return (true, null);
+        }
+
+        var keys = _access.OpeningKeys(values);
+        if (keys.Count == 0)
+        {
+            return (true, null);
+        }
+
+        var held = await OpeningLocks.AcquireAsync(keys, context.HttpContext.RequestAborted).ConfigureAwait(false);
+        if (held is not null)
+        {
+            return (true, held);
+        }
+
+        _logger.LogWarning(
+            "LiveTvAccess: timed out waiting for another open of the same channel or stream; denying user={UserId} {Action}",
+            caller.UserId.ToString("N"),
+            action?.ActionName ?? "(unknown)");
+        context.Result = PlainText(StatusCodes.Status403Forbidden, AccessPolicy.DeniedMessage);
+        return (false, null);
     }
 
     /// <summary>

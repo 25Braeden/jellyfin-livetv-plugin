@@ -353,6 +353,58 @@ public class AccessService
     }
 
     /// <summary>
+    /// Gets the opening-lock keys for what a request can open: its route item (channel or program) and any open token.
+    /// For each channel: the channel and its media source (the md5 of the stream URL, shared by twins on other tuners),
+    /// plus an open token's own media source part. Only these are looked up (cheap, and bounded), and unresolvable
+    /// values are skipped (the checks decide about them).
+    /// </summary>
+    /// <param name="values">The request's identifiers.</param>
+    /// <returns>The keys.</returns>
+    public IReadOnlyCollection<string> OpeningKeys(IEnumerable<Filters.CollectedValue> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            try
+            {
+                LiveTvChannel? channel = null;
+                if (value.IsRouteIdentifier && value.Hint != Filters.ValueHint.PlaySessionId && value.Guid is { } id && id != Guid.Empty)
+                {
+                    var item = _libraryManager.GetItemById(id);
+                    channel = item as LiveTvChannel
+                        ?? (item is LiveTvProgram program && program.ChannelId != Guid.Empty ? _libraryManager.GetItemById(program.ChannelId) as LiveTvChannel : null);
+                }
+                else if (ProviderString.Classify(value.Text, out var tokenItemId) == ProviderStringKind.LiveTvOpenToken && tokenItemId != Guid.Empty)
+                {
+                    channel = _libraryManager.GetItemById(tokenItemId) as LiveTvChannel;
+                    if (ProviderString.TrySplitLiveTvOpenToken(value.Text, out var channelText, out var source)
+                        && !string.IsNullOrEmpty(source) && !string.Equals(source, channelText, StringComparison.OrdinalIgnoreCase))
+                    {
+                        keys.Add("source:" + source);
+                    }
+                }
+
+                if (channel is not null)
+                {
+                    keys.Add("channel:" + channel.Id.ToString("N"));
+                    if (JellyfinIds.M3uMediaSourceId(channel.ExternalId) is { } mediaSource)
+                    {
+                        keys.Add("source:" + mediaSource);
+                    }
+                }
+            }
+#pragma warning disable CA1031 // A value that can't be looked up gets no lock; the checks deny it if needed.
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+            }
+        }
+
+        return keys;
+    }
+
+    /// <summary>
     /// The tuner Jellyfin would actually use to serve this channel: an already-open, sharable stream of the same
     /// media source is handed out instead of opening a new one, even if it is on another tuner (possible when both
     /// playlists list the same stream URL).

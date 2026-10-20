@@ -142,6 +142,20 @@ public static class LiveTvEndpoints
             : null;
     }
 
+    /// <summary>
+    /// Gets whether a streaming request uses an already-open live stream (its effective <c>liveStreamId</c>), in which
+    /// case Jellyfin opens nothing (TranscodeManager.cs:663-664, StreamingHelpers.cs:116, :141).
+    /// </summary>
+    /// <param name="action">The action, if it is a controller action.</param>
+    /// <param name="arguments">The action arguments.</param>
+    /// <returns><c>true</c> if it uses an open stream.</returns>
+    public static bool UsesOpenStream(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action, IDictionary<string, object?> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        return action?.ControllerName is "Videos" or "Audio" or "DynamicHls"
+            && StaticStreamRequest.EffectiveLiveStreamId(Argument(arguments, "liveStreamId") as string, Argument(arguments, "params") as string) is not null;
+    }
+
     private static object? Argument(IDictionary<string, object?> arguments, string name)
         => arguments.FirstOrDefault(a => string.Equals(a.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
 }

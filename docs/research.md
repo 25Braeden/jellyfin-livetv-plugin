@@ -1016,7 +1016,7 @@ scheduled run, with no new evidence, is Healthy.
 | Q6 | Subagent | Play session id satisfied the must-name-a-target rule | CONFIRMED (live: 400 instead of 403; no impact) | `LiveTvAccessFilter` resolvedTarget | R9 `1acf78b` |
 | Q8 | Subagent | API refreshes reset the claim-evidence window; partial drift; registration-only check | CONFIRMED (window); limits documented | `SelfCheckService.CheckClaims` | R10 `b93e9e0` |
 | Q2 | Subagent | Up to ~16k GUID lookups per request (CPU/DB amplification) | CONFIRMED (live: 10k GUIDs = 2.65 s vs 0.05 s) | `TargetCollector` budget 50k; per-value `GetItemById` | R11 (see git log) |
-| Q4 | Subagent | Twin channels opened at the same moment share across tuners | CONFIRMED (live, 1st attempt; precondition: same URL on both tuners, warn-only) | check-then-act in `EffectiveTuner` | **Open: needs owner decision** |
+| Q4 | Subagent | Twin channels opened at the same moment share across tuners | CONFIRMED (live, 1st attempt; precondition: same URL on both tuners, warn-only) | check-then-act in `EffectiveTuner` | R12 (see git log) |
 | Argon #1 | Gemini | Auto-opened HLS job has no `LiveStreamId`, so another user can read it | NOT REPRODUCIBLE (live: B 403) | `TranscodeManager.cs:383, 437-440, 663-674`; `LiveTvMediaSourceProvider.cs:303` | — |
 | Argon #2 | Gemini | Channel `Path` / `CurrentProgram.MediaSources` unscrubbed | NOT REPRODUCIBLE (live: none present) | `DtoService.cs:258-261`; `LiveTvProgram.cs:22`; `GuideManager` | — |
 | Argon #3 | Gemini | Status refresh / duplicate lookup cost | NOT REPRODUCIBLE as a vulnerability (admin-only, serialized by `_gate`, 30 s bound) | `SelfCheckService` | — |
@@ -1044,3 +1044,34 @@ existing 50,000-node walk budget allowed roughly 16,000 per request.
 The realistic case is a playback progress report whose now-playing queue holds over 1,000 distinct items (a large
 queue in a large library); it gets 403. Playback continues, but that session's progress and now-playing state aren't
 saved. Not observed with a real client here (the local library has two items); simulated live.
+
+### R12. Opens of the same channel or stream are serialized (independent review Q4, owner decision)
+
+**Confirmed live before the fix** (first attempt): with the same stream URL on both tuners, A and B opened the twins at
+the same moment. Both got 200 with the same live stream id. B was then watching through A's tuner 1, leaving B's tuner 2
+free for a second stream. The fix 5d check (`EffectiveTuner`) ran before the open, and nothing was open yet for either
+request.
+
+**Fix (`OpeningLocks`, filter):**
+- **Which requests:** actions that can open a stream (`LiveTvEndpoints.IsOpening`) without a live stream id. With one,
+  Jellyfin uses that open stream and opens nothing (`TranscodeManager.cs:663-664`), so normal HLS segment and playlist
+  requests never wait.
+- **Keys:** the route channel or program and any open token (`AccessService.OpeningKeys`). Each gives the channel and
+  its media source (md5 of the stream URL, shared by twins), plus a token's own media source part. Only these are
+  looked up.
+- **What it covers:** the tuner check and the action itself. Admins take the lock too, because their open can race a
+  user's check; they are never denied by it.
+- **Safety:** keys are taken in a fixed order (no deadlock), the total wait is bounded at 30 s (then the generic 403 and
+  a log line), release is in `finally` (exceptions and cancellation included), and unused entries are removed.
+
+**Tests (written first; two failed on the placeholder):**
+- concurrent twin opens: the second opener is denied;
+- release after an exception and after cancellation, with no keys left over;
+- timeout gives 403;
+- requests with a live stream id don't wait;
+- different channels don't block each other.
+
+**Live after the fix:** 5 of 5 simultaneous twin opens gave A 200 and B 403, and no stream was shared across tuners.
+Gate 3 section 17 repeats this three times.
+
+`docs/deploy.md`: the overlap check (`m3u_overlap.py`) must report zero overlaps before go-live. It is a hard stop.

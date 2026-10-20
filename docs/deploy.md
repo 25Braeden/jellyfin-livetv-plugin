@@ -54,19 +54,21 @@ where it says so.
 - [ ] **Measure Refresh Guide on the final playlists.** In Dashboard > Scheduled Tasks > Refresh Guide, run it once
       and note how long it takes. The plugin tags channels after each refresh, and the self-check reports "no
       channels" for a tuner until its channels exist. If the refresh takes long, schedule it off-peak.
-- [ ] **Overlap check: no stream URL on two tuners.** Run on the final playlist files, wherever they are (on the VPS,
-      or on copies you downloaded yourself):
+- [ ] **HARD STOP: overlap check must report zero overlaps.** Do not go live until this passes. Run it on the final
+      playlist files, wherever they are (on the VPS, or on copies you downloaded yourself):
 
       python3 scripts/m3u_overlap.py tuner1.m3u tuner2.m3u
 
-  - Exit 0 prints `OK: no stream URL is listed by more than one playlist.`
-  - Exit 1 lists each shared stream as `scheme://host`, a hash and the channel names. It never prints URLs. Remove
-    each shared stream from all but one playlist.
+  - **Required result:** exit code 0 and `OK: no stream URL is listed by more than one playlist.`
+  - Exit 1 lists each shared stream as `scheme://host`, a hash and the channel names; it never prints URLs. Remove
+    each shared stream from all but one playlist, run Refresh Guide, and run the check again.
   - The script is standalone Python 3 with no dependencies (copy `scripts/m3u_overlap.py` to the server if needed).
-  - The hash matches the one `GET /LiveTvAccess/Status` shows under `Duplicates`.
-  - The plugin only warns about overlaps; it doesn't fail. But users of different tuners block each other on a
-    shared stream, and a non-sharable shared stream can be closed by the other user
-    (`docs/research.md`, fix 5e, gap 2).
+    The hash matches the one `GET /LiveTvAccess/Status` shows under `Duplicates`, which must be empty after go-live.
+  - Why it's a hard stop, although the plugin only warns:
+    - Shared stream URLs make users of different tuners block each other.
+    - A non-sharable shared stream can be closed by the other user.
+    - Opens of the same stream are serialized (final review R12), so the second opener is refused instead of sharing
+      the first's tuner; but that still means one of them can't watch (`docs/research.md`, fix 5e gap 2 and R12).
 - [ ] **Logo URLs (`tvg-logo`) carry no credentials.** Non-admins can see the raw logo URL of their own channels
       (accepted risk, gap 4).
 - [ ] **User settings** (Dashboard > Users):
