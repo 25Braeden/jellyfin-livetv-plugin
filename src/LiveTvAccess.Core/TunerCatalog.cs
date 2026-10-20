@@ -37,6 +37,13 @@ public sealed class TunerCatalog
     public IReadOnlyList<string> Keys => _tuners.Select(t => t.Key).ToArray();
 
     /// <summary>
+    /// Gets a tuner's URL (as configured).
+    /// </summary>
+    /// <param name="key">The tuner key.</param>
+    /// <returns>The URL, or <c>null</c> for an unknown key.</returns>
+    public string? UrlOf(string key) => _tuners.FirstOrDefault(t => string.Equals(t.Key, key, StringComparison.Ordinal)).Url;
+
+    /// <summary>
     /// Gets the tuner key for a channel from its Jellyfin ExternalId.
     /// </summary>
     /// <param name="channelExternalId">The LiveTvChannel ExternalId (e.g. "m3u_{md5(url)}{md5(stream)}").</param>

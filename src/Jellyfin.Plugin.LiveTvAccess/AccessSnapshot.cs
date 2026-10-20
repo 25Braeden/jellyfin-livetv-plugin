@@ -17,4 +17,8 @@ public sealed record AccessSnapshot(
     UserTunerMap Map,
     IReadOnlySet<string> OwnedTags,
     IReadOnlySet<string> NewlyClaimedTags,
-    long Version);
+    long Version)
+{
+    /// <summary>Gets how many tuner entries the configuration has, invalid ones included.</summary>
+    public int ConfiguredTunerEntries { get; init; }
+}

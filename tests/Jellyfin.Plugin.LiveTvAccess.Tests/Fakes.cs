@@ -11,6 +11,7 @@ using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.LiveTvAccess;
 using Jellyfin.Plugin.LiveTvAccess.Configuration;
+using Jellyfin.Plugin.LiveTvAccess.Health;
 using LiveTvAccess.Core;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
@@ -88,6 +89,17 @@ public sealed class ListLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
 }
 
 /// <summary>Signals stub for filter tests that don't involve the sync worker.</summary>
+public sealed class StaticSelfCheck : ISelfCheck
+{
+    public StaticSelfCheck(bool healthy) => IsHealthy = healthy;
+
+    public bool IsHealthy { get; set; }
+
+    public SelfCheckStatus Status => new() { State = IsHealthy ? SelfCheckStatus.Healthy : SelfCheckStatus.Failed };
+
+    public Task<SelfCheckStatus> RunAsync(string trigger, CancellationToken cancellationToken) => Task.FromResult(Status);
+}
+
 public sealed class ReadySignals : ISyncSignals
 {
     public bool IsReady { get; set; } = true;
@@ -204,12 +216,9 @@ public sealed class World
         var (config, configFake) = Fake<IConfigurationManager>.Create();
         configFake.Handlers["GetConfiguration"] = args => (string)args[0]! == "encoding"
             ? new MediaBrowser.Model.Configuration.EncodingOptions { TranscodingTempPath = TranscodePath }
-            : new LiveTvOptions
-            {
-                TunerHosts = [new TunerHostInfo { Id = "host1", Type = "m3u", Url = Tuner1Url }, new TunerHostInfo { Id = "host2", Type = "m3u", Url = Tuner2Url }],
-                RecordingPath = "/recordings",
-            };
+            : LiveTv;
         configFake.Handlers["get_CommonApplicationPaths"] = _ => paths;
+        ConfigurationManager = config;
 
         LibraryManager = library;
 
@@ -264,6 +273,18 @@ public sealed class World
     public int UserUpdates => Volatile.Read(ref _userUpdates);
 
     public ISyncSignals Signals { get; set; } = new ReadySignals();
+
+    /// <summary>The self-check the filter consults (healthy by default).</summary>
+    public ISelfCheck Health { get; set; } = new StaticSelfCheck(true);
+
+    /// <summary>Jellyfin's Live TV configuration ("livetv"), mutable by tests.</summary>
+    public LiveTvOptions LiveTv { get; } = new()
+    {
+        TunerHosts = [new TunerHostInfo { Id = "host1", Type = "m3u", Url = Tuner1Url }, new TunerHostInfo { Id = "host2", Type = "m3u", Url = Tuner2Url }],
+        RecordingPath = "/recordings",
+    };
+
+    public IConfigurationManager ConfigurationManager { get; }
 
     public User UserA { get; }
 
@@ -467,7 +488,7 @@ public sealed class World
     /// <summary>Runs the filter as a controller action whose action returns <paramref name="result"/>; returns the final result.</summary>
     public async Task<IActionResult?> RunWithResult(ClaimsPrincipal principal, string controller, string action, IActionResult result, IDictionary<string, object?>? arguments = null)
     {
-        var filter = new Filters.LiveTvAccessFilter(Access, Signals, NullLogger<Filters.LiveTvAccessFilter>.Instance);
+        var filter = new Filters.LiveTvAccessFilter(Access, Signals, Health, NullLogger<Filters.LiveTvAccessFilter>.Instance);
         var context = Context(principal, arguments ?? new Dictionary<string, object?>(), "GET", null, controller, action);
         ActionExecutedContext? executed = null;
         await filter.OnActionExecutionAsync(context, () =>
@@ -487,7 +508,7 @@ public sealed class World
         string? template = null,
         params string[] routeArgs)
     {
-        var filter = new Filters.LiveTvAccessFilter(Access, Signals, NullLogger<Filters.LiveTvAccessFilter>.Instance);
+        var filter = new Filters.LiveTvAccessFilter(Access, Signals, Health, NullLogger<Filters.LiveTvAccessFilter>.Instance);
         var context = Context(principal, arguments, method, template, controller, action, routeArgs);
         var ran = false;
         await filter.OnActionExecutionAsync(context, () =>

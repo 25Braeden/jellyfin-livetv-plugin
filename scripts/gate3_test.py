@@ -648,6 +648,17 @@ def main():
         n.run_task(admin, "RefreshGuide")
         twin = channel(n.expected_channels(), "Test Kids", "tuner2")
         wait_for(lambda: tags_match(admin, aid, n.expected_channels()))
+        # Fix 7: the self-check reports the duplicate as a warning only, redacted to scheme://host and a hash.
+        st, s7 = admin.get("/LiveTvAccess/Status", refresh="true")
+        dup = (s7.get("Duplicates") or [None])[0] if st == 200 else None
+        parts = urllib.parse.urlsplit(news_url.strip())
+        check("self-check: same URL on two tuners = warning, state stays Healthy",
+              st == 200 and s7["State"] == "Healthy" and len(s7["Duplicates"]) == 1, f"HTTP {st} {s7.get('State') if st == 200 else ''}")
+        check("self-check: duplicate shown as host + hash only",
+              dup is not None and dup["Host"] == f"{parts.scheme}://{parts.netloc}" and dup["Hash"].startswith("sha256:")
+              and dup["Tuners"] == ["tuner1", "tuner2"], str(dup))
+        check("self-check: no stream path, query or tuner file in the status",
+              st == 200 and parts.path not in json.dumps(s7) and "ch=" not in json.dumps(s7) and "/tuners/" not in json.dumps(s7))
         st_b, ms_b, ps_b = n.open_channel(B7, b7u, twin)
         try:
             st, _ = A7.post(f"/Items/{news}/PlaybackInfo", {"UserId": a7u, "AutoOpenLiveStream": True}, userId=a7u)
@@ -725,6 +736,64 @@ def main():
         check(f"{who} library song via legacy params static still works", st == 200 and len(body) > 0, f"HTTP {st}")
     st, body = first_bytes(A8, f"/Audio/{lib8['Audio']}/universal?userId={a8u}&container=mp3")
     check("A UniversalAudio for a library song still works", st == 200 and len(body) > 0, f"HTTP {st}")
+
+    print("== 19. self-check, failed state, status API (fix 7)")
+    since9 = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    A9, a9u, _ = n.login("A", "gate3-A-fix7")
+    B9, b9u, _ = n.login("B", "gate3-B-fix7")
+
+    def status(refresh=False):
+        st, s = admin.get("/LiveTvAccess/Status", refresh="true" if refresh else "false")
+        return s if st == 200 else {"State": f"HTTP {st}"}
+
+    s = status(refresh=True)
+    check("admin GET /LiveTvAccess/Status = Healthy", s["State"] == "Healthy", s["State"])
+    check("status: every check passed (filter, endpoint shapes, claims, tuners, duplicates)",
+          all(c["Ok"] for c in s.get("Checks", [])) and len(s.get("Checks", [])) == 5,
+          "; ".join(f"{c['Name']}={c['Ok']}" for c in s.get("Checks", [])))
+    want_counts = {}
+    for tuner, _ in n.expected_channels().values():
+        want_counts[tuner] = want_counts.get(tuner, 0) + 1
+    check("status: per-tuner channel counts match the playlists",
+          {x["Key"]: x["ChannelCount"] for x in s.get("Tuners", [])} == want_counts, str(want_counts))
+    check("status: no tuner URL, stream URL or credential in the response",
+          not any(m in json.dumps(s) for m in ("/tuners/", "fakestreams", "ch=", ".m3u")))
+    check("non-admin A GET /LiveTvAccess/Status = 403", A9.get("/LiveTvAccess/Status")[0] == 403)
+    check("anonymous GET /LiveTvAccess/Status = 401", anon_get("/LiveTvAccess/Status")[0] == 401)
+
+    # Drift: plugin tuner2 no longer matches a Jellyfin tuner -> failed state, then fix it -> recovers by itself.
+    bad = {**CONFIG, "Tuners": [dict(x, Url="/tuners/missing.m3u") if x["Key"] == "tuner2" else x for x in CONFIG["Tuners"]]}
+    try:
+        check("bad config saved through the normal plugin config API", admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", bad)[0] == 204)
+        check("self-check enters the failed state on its own after the save", wait_for(lambda: status()["State"] == "Failed", 20))
+        s = status()
+        check("failed state names the tuner, without its URL",
+              any("tuner2" in p for p in s.get("Problems", [])) and "missing.m3u" not in json.dumps(s), str(s.get("Problems")))
+        st, ms9, ps9 = n.open_channel(A9, a9u, news)
+        check("failed state: A opening A's own channel = 403", st == 403, f"HTTP {st}")
+        if ps9:
+            stop(A9, ms9, ps9, news)
+        check("failed state: A lists Live TV channels = 403", A9.get("/LiveTv/Channels", userId=a9u)[0] == 403)
+        st, _ = A9.post(f"/Items/{lib8['Movie']}/PlaybackInfo", {"UserId": a9u}, userId=a9u)
+        check("failed state: A's library movie still works", st == 200, f"HTTP {st}")
+        st, body = first_bytes(A9, f"/Audio/{lib8['Audio']}/stream.mp3?static=true")
+        check("failed state: A's library song still streams", st == 200 and len(body) > 0, f"HTTP {st}")
+        st, msa, psa = n.open_channel(admin, aid, news)
+        check("failed state: admin still opens Live TV", st == 200 and bool(psa), f"HTTP {st}")
+        if psa:
+            stop(admin, msa, psa, news)
+        time.sleep(2)
+    finally:
+        check("config restored", admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", CONFIG)[0] == 204)
+    check("self-check recovers on its own after the fix", wait_for(lambda: status()["State"] == "Healthy", 20))
+    check("tags back in sync after the fix", wait_for(lambda: tags_match(admin, aid, n.expected_channels())))
+    ok9, detail9 = plays(A9, a9u, news)
+    check("after recovery A plays A's own channel again", ok9, detail9)
+    log9 = subprocess.run(["docker", "logs", "--since", since9, "jellyfin-dev"], capture_output=True, text=True)
+    log9 = log9.stdout + log9.stderr
+    check("server log: SELF-CHECK FAILED error, then 'restored'",
+          "SELF-CHECK FAILED" in log9 and "Live TV access restored" in log9)
+    check("server log: self-check lines carry no tuner path", not any("missing.m3u" in l for l in log9.splitlines() if "SelfCheck" in l))
 
     print("== 10. logging")
     time.sleep(1)

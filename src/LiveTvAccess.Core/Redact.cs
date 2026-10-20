@@ -23,4 +23,43 @@ public static class Redact
 
         return "sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..8];
     }
+
+    /// <summary>
+    /// Describes where a URL points without revealing it: <c>scheme://host[:port]</c> for an absolute HTTP(S) URL
+    /// (no user info, path or query, which is where providers put credentials), <c>file</c> for a local path.
+    /// </summary>
+    /// <param name="url">The URL or path.</param>
+    /// <returns>The redacted location.</returns>
+    public static string Location(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return "(none)";
+        }
+
+        var text = url.Trim();
+        if (text.StartsWith('/') || text.StartsWith('\\') || (text.Length > 2 && char.IsAsciiLetter(text[0]) && text[1] == ':' && text[2] is '\\' or '/'))
+        {
+            return "file";
+        }
+
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Scheme))
+        {
+            return "(unrecognized)";
+        }
+
+        if (uri.IsFile)
+        {
+            return "file";
+        }
+
+        if (string.IsNullOrEmpty(uri.Host))
+        {
+            return "(unrecognized)";
+        }
+
+        return uri.IsDefaultPort || uri.Port < 0
+            ? $"{uri.Scheme}://{uri.Host}"
+            : $"{uri.Scheme}://{uri.Host}:{uri.Port}";
+    }
 }

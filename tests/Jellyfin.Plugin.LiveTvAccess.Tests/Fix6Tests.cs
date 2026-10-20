@@ -35,7 +35,7 @@ public class Fix6Tests
             context.HttpContext.Request.Headers[name] = value;
         }
 
-        var filter = new Filters.LiveTvAccessFilter(w.Access, w.Signals, NullLogger<Filters.LiveTvAccessFilter>.Instance);
+        var filter = new Filters.LiveTvAccessFilter(w.Access, w.Signals, w.Health, NullLogger<Filters.LiveTvAccessFilter>.Instance);
         var ran = false;
         await filter.OnActionExecutionAsync(context, () =>
         {

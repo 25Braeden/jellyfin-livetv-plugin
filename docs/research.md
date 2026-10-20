@@ -697,3 +697,60 @@ nothing is exposed.
 
 **Accepted:** a process on the Jellyfin host or inside its container can still read a buffer if it knows the random
 id. That is already inside the trust boundary.
+
+## Gate 3.5 phase 2, fix 7: startup self-check, failed state, status API (2026-10-20)
+
+`SelfCheckService` (`Health/`) runs about 2 s after startup. It runs again when the plugin config or the Jellyfin
+`livetv` config is saved, after Refresh Guide, and periodically: every 10 minutes while healthy, every minute while
+failed. It checks:
+
+| Check | Source | Failed when |
+|---|---|---|
+| Filter registered | `IOptions<MvcOptions>.Filters` has a `TypeFilterAttribute` for `LiveTvAccessFilter` | Absent |
+| Endpoint shapes | `IActionDescriptorCollectionProvider` against `EndpointContract.Requirements`. 30 actions, covering parameter names the filter reads (`static`, `params`, `playSessionId`, `liveStreamId`, route ids), body properties (`OpenToken`, `LiveStreamId`, `MediaSourceId`), return types the scrubber recognizes, and the `Users/` route that triggers a re-sync. Every route of an action must match (GET and HEAD) | Anything missing |
+| Model members | Reflection: `MediaSourceInfo.Path`/`EncoderPath`/`RequiredHttpHeaders`/`OpenToken`/`LiveStreamId`, `LiveTvOptions` tuner and listing fields, `SessionInfoDto` now-playing, `ChannelInfo.Id`/`Path`, and others | Anything missing |
+| Claim contract | `Jellyfin.Api.Constants.InternalClaimTypes.UserId`/`IsApiKey`, read by reflection (`InternalClaimTypes.cs:11, 41`). Also runtime evidence from `AccessService.CallerCounts` | Constants missing or changed, or since the last check at least 3 authenticated requests carried no recognizable claim and none did |
+| Tuners | `TunerHealth.Evaluate` (Core): the plugin's tuners against Jellyfin's M3U tuner URLs and the library's channel ExternalIds | No tuners configured; a tuner URL that isn't a Jellyfin M3U tuner; a tuner with no channels |
+| Duplicate stream URLs | The same media source id (md5 of the URL) on more than one tuner | **Never.** Warning only, per the owner's decision |
+
+Warnings (not failures) also cover: ignored invalid tuner entries, a tuner with no users, and Jellyfin M3U tuners
+missing from the plugin config.
+
+**Failed state.** The problems are logged once per change as `LiveTvAccess: SELF-CHECK FAILED ...`, and the filter
+treats the server as not ready (`ready = sync.IsReady && selfCheck.IsHealthy`). That is the same proven path as before
+the initial sync: protected Live TV operations get the generic 403 for non-admins, while admins, API keys and
+non-Live-TV use are unaffected. The buffer rule (fix 6) is independent of this, so Jellyfin's ffmpeg keeps working.
+It never throws or unloads: a check that itself fails is a failed state. It recovers on the next run after a fix,
+and logs "Live TV access restored". Before the first run the state is `Pending`, which counts as not healthy (fail
+closed, about 2 s after startup).
+
+**Limits:**
+- If the filter isn't registered, nothing can be enforced. The self-check can only report it, and the tag-based
+  channel hiding still applies.
+- If the claim contract is broken, admins can't be recognized either, so admins lose Live TV too until it is fixed.
+
+**Status API.** `GET /LiveTvAccess/Status[?refresh=true]` requires the `RequiresElevation` policy (admin); A gets 403
+and anonymous callers 401. It returns:
+- `State` (`Pending`, `Healthy` or `Failed`), `CheckedAtUtc`, `Trigger`, `InitialSyncComplete`;
+- `Checks` (name, ok, detail), `Problems`, `Warnings`;
+- `Tuners`: key, `Location` (`scheme://host` or `file`), `UrlHash`, `InJellyfin`, `ChannelCount`, `UserCount`;
+- `Duplicates`: `Host` as `scheme://host[:port]`, `Hash`, `Tuners`, `ChannelCount`;
+- `RequestsChecked`.
+
+It never includes a URL path, query, user info, tuner file path or credential (`Redact.Location`, tested).
+Duplicate hosts come from Jellyfin's cached M3U channel list (`ITunerHost.GetChannels(enableCache: true)`). This
+lookup only happens when duplicates exist; on a cold cache, Jellyfin reads the playlists once, as a guide refresh
+does.
+
+**Verified live** (Gate 3, sections 17 and 19, 197/197):
+- Healthy against the real 10.11.11 server: all 30 endpoint shapes and the claim constants match. Per-tuner channel
+  counts match the playlists, and the response has no URLs.
+- Saving a bad tuner URL through the normal config API: the server reaches the failed state by itself. The problem
+  names the tuner but not its URL. A gets 403 on A's own channel and on the channel list. A's library movie and song
+  still work, and the admin still opens Live TV.
+- Restoring the config: it recovers by itself, tags re-sync, and A plays again. The log has the "SELF-CHECK FAILED"
+  and "restored" lines and no tuner path.
+- Same URL on both tuners: the state stays Healthy, with one duplicate shown as `http://fakestreams` plus a hash.
+
+**Version-fragile:** the whole contract is pinned to 10.11.11. That's the point: on an upgrade, drift shows up as a
+failed state with the exact missing piece, instead of a silent bypass.

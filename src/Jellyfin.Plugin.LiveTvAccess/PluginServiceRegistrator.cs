@@ -1,5 +1,6 @@
 using Jellyfin.Data.Events.Users;
 using Jellyfin.Plugin.LiveTvAccess.Filters;
+using Jellyfin.Plugin.LiveTvAccess.Health;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Plugins;
@@ -23,6 +24,13 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<TagSyncService>();
         serviceCollection.AddSingleton<ISyncSignals>(sp => sp.GetRequiredService<TagSyncService>());
         serviceCollection.AddHostedService(sp => sp.GetRequiredService<TagSyncService>());
+
+        // Self-check (filter registered, endpoint shapes, claim contract, tuners): a failed state denies protected
+        // Live TV operations for non-admins. Shown at GET /LiveTvAccess/Status (admin only).
+        serviceCollection.AddSingleton<IJellyfinSurface, JellyfinSurface>();
+        serviceCollection.AddSingleton<SelfCheckService>();
+        serviceCollection.AddSingleton<ISelfCheck>(sp => sp.GetRequiredService<SelfCheckService>());
+        serviceCollection.AddHostedService(sp => sp.GetRequiredService<SelfCheckService>());
 
         // Jellyfin resolves event consumers from DI (Jellyfin.Server.Implementations/Events/EventManager.cs:46-52).
         serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, UserEventsConsumer>();

@@ -49,6 +49,13 @@ public sealed class UserTunerMap
     public int AssignedUserCount => _userToTuner.Count;
 
     /// <summary>
+    /// Gets how many users are assigned to a tuner.
+    /// </summary>
+    /// <param name="tunerKey">The tuner key.</param>
+    /// <returns>The user count.</returns>
+    public int UserCountOf(string tunerKey) => _userToTuner.Values.Count(k => string.Equals(k, tunerKey, StringComparison.Ordinal));
+
+    /// <summary>
     /// Gets the tuner key assigned to a user.
     /// </summary>
     /// <param name="userId">The user id.</param>

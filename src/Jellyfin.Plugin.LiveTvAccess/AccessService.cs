@@ -22,10 +22,14 @@ namespace Jellyfin.Plugin.LiveTvAccess;
 /// </summary>
 public class AccessService
 {
-    // Claim names set by Jellyfin.Api/Auth/CustomAuthenticationHandler.cs:62-70
-    // (constants in Jellyfin.Api/Constants/InternalClaimTypes.cs, not shipped on NuGet). Version-fragile.
-    private const string UserIdClaim = "Jellyfin-UserId";
-    private const string IsApiKeyClaim = "Jellyfin-IsApiKey";
+    /// <summary>
+    /// Jellyfin's user id claim type, set by Jellyfin.Api/Auth/CustomAuthenticationHandler.cs:62-70 (constant in
+    /// Jellyfin.Api/Constants/InternalClaimTypes.cs:11, not shipped on NuGet; checked by the self-check). Version-fragile.
+    /// </summary>
+    public const string UserIdClaim = "Jellyfin-UserId";
+
+    /// <summary>Jellyfin's API-key claim type (Jellyfin.Api/Constants/InternalClaimTypes.cs:41).</summary>
+    public const string IsApiKeyClaim = "Jellyfin-IsApiKey";
 
     private readonly ILibraryManager _libraryManager;
     private readonly IMediaSourceManager _mediaSourceManager;
@@ -37,6 +41,8 @@ public class AccessService
     private AccessSnapshot? _snapshot;
     private long _version;
     private long _lastUnrecognizedWarning = long.MinValue / 2;
+    private long _recognizedCallers;
+    private long _unrecognizedCallers;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AccessService"/> class.
@@ -92,6 +98,13 @@ public class AccessService
     }
 
     /// <summary>
+    /// Gets how many authenticated principals carried a recognizable user / API-key claim, and how many didn't (the
+    /// self-check treats "only unrecognized" as a broken claim contract).
+    /// </summary>
+    public (long Recognized, long Unrecognized) CallerCounts
+        => (Interlocked.Read(ref _recognizedCallers), Interlocked.Read(ref _unrecognizedCallers));
+
+    /// <summary>
     /// Drops the cached snapshot so the next read rebuilds it (config change, user deleted).
     /// </summary>
     public void Invalidate()
@@ -118,6 +131,7 @@ public class AccessService
         var hasUserId = Guid.TryParse(principal.FindFirstValue(UserIdClaim), out var userId) && userId != Guid.Empty;
         if (hasUserId)
         {
+            Interlocked.Increment(ref _recognizedCallers);
             var user = _userManager.GetUserById(userId);
             return new Caller(
                 userId,
@@ -128,6 +142,8 @@ public class AccessService
 
         if (isApiKey)
         {
+            Interlocked.Increment(ref _recognizedCallers);
+
             // Jellyfin API keys carry no user (Jellyfin.Server.Implementations/Security/AuthorizationContext.cs:195-217).
             return new Caller(Guid.Empty, IsApiKey: true, IsAdministrator: false, HasLiveTvAccess: false);
         }
@@ -138,6 +154,7 @@ public class AccessService
         }
 
         // Authenticated, but neither a user nor an API key we recognize: Jellyfin's claim contract may have changed.
+        Interlocked.Increment(ref _unrecognizedCallers);
         var now = Environment.TickCount64;
         if (now - Interlocked.Read(ref _lastUnrecognizedWarning) > (long)TimeSpan.FromMinutes(5).TotalMilliseconds)
         {
@@ -536,6 +553,6 @@ public class AccessService
             version,
             string.Join(", ", catalog.Keys),
             map.AssignedUserCount);
-        return new AccessSnapshot(catalog, map, owned, newlyClaimed, version);
+        return new AccessSnapshot(catalog, map, owned, newlyClaimed, version) { ConfiguredTunerEntries = config.Tuners?.Length ?? 0 };
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using LiveTvAccess.Core;
 using MediaBrowser.Controller.LiveTv;
@@ -31,9 +32,11 @@ namespace Jellyfin.Plugin.LiveTvAccess.Filters;
 public class LiveTvAccessFilter : IAsyncActionFilter
 {
     private static readonly Caller AnonymousCaller = new(Guid.Empty, IsApiKey: false, IsAdministrator: false, HasLiveTvAccess: false);
+    private static long _requestsChecked;
 
     private readonly AccessService _access;
     private readonly ISyncSignals _sync;
+    private readonly Health.ISelfCheck _health;
     private readonly ILogger<LiveTvAccessFilter> _logger;
 
     /// <summary>
@@ -41,19 +44,25 @@ public class LiveTvAccessFilter : IAsyncActionFilter
     /// </summary>
     /// <param name="access">The access service.</param>
     /// <param name="sync">The tag-sync worker (readiness, re-sync requests).</param>
+    /// <param name="health">The self-check (while it isn't healthy, protected operations are denied).</param>
     /// <param name="logger">Instance of the <see cref="ILogger{LiveTvAccessFilter}"/> interface.</param>
-    public LiveTvAccessFilter(AccessService access, ISyncSignals sync, ILogger<LiveTvAccessFilter> logger)
+    public LiveTvAccessFilter(AccessService access, ISyncSignals sync, Health.ISelfCheck health, ILogger<LiveTvAccessFilter> logger)
     {
         _access = access;
         _sync = sync;
+        _health = health;
         _logger = logger;
     }
+
+    /// <summary>Gets how many requests the filter has seen since the server started (shown by the self-check).</summary>
+    public static long RequestsChecked => Interlocked.Read(ref _requestsChecked);
 
     /// <inheritdoc />
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
+        Interlocked.Increment(ref _requestsChecked);
 
         // Anonymous callers get default-deny too: Jellyfin does NOT require auth on the stream endpoints
         // (Jellyfin.Api/Controllers/VideosController.cs:312, AudioController.cs:89 have no [Authorize]), so an anonymous
@@ -125,7 +134,7 @@ public class LiveTvAccessFilter : IAsyncActionFilter
     {
         // One snapshot for the whole decision: a concurrent config change can't mix catalog and map.
         var snapshot = _access.Snapshot;
-        var ready = _sync.IsReady;
+        var ready = _sync.IsReady && _health.IsHealthy;
         var action = context.ActionDescriptor as ControllerActionDescriptor;
 
         if (string.Equals(action?.ControllerName, LiveTvEndpoints.LiveTvController, StringComparison.Ordinal))
@@ -238,7 +247,7 @@ public class LiveTvAccessFilter : IAsyncActionFilter
     private bool AdmitLegacyHls(ActionExecutingContext context, ControllerActionDescriptor action, Caller caller, bool anonymous, long started)
     {
         var snapshot = _access.Snapshot;
-        var ready = _sync.IsReady;
+        var ready = _sync.IsReady && _health.IsHealthy;
         string? Arg(string name) => context.ActionArguments.TryGetValue(name, out var v) ? v as string : null;
         bool Refuse(string detail) => Deny(context, caller, AccessDecision.DenyUnresolved, "legacy-hls", detail, started, 0);
 
