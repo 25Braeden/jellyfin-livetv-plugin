@@ -11,6 +11,7 @@
 | 2026-10-19 | Gate 3.5 fix 2: sync worker lifecycle | 8c6e9c8 | KnownIssue 5/15 pass; 45/45 acceptance |
 | 2026-10-19 | Scale test (16,000 channels) | cc13c53 | See below |
 | 2026-10-19 | Gate 3.5 fix 3: snapshots, reserved key, tag ownership, API-key rule | 9032190 | KnownIssue 9/15 pass; 45/45 acceptance |
+| 2026-10-19 | Gate 3.5 fix 4: native permission, unrecognized callers, one message | 3eac58b | KnownIssue 12/15 pass; 50/50 acceptance |
 
 ## Scale test (16,000 channels), 2026-10-19
 

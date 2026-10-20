@@ -29,6 +29,8 @@ CONFIG = {
     "Users": [{"UserName": "A", "TunerKey": "tuner1"}, {"UserName": "B", "TunerKey": "tuner2"}],
 }
 TUNER2_M3U = n.tuner_file("tuner2")
+# The plugin's one generic denial message (Core AccessPolicy.DeniedMessage).
+DENIED = "This Live TV channel isn't available for your account."
 # The original hand-written test channels (present in both the small and the scale fixtures).
 TEST_CHANNELS = {"Test News", "Test Sports", "Shared Channel", "Test Live TS", "Test Movies", "Test Kids"}
 results = []
@@ -150,7 +152,7 @@ def main():
     print("== 3. PlaybackInfo")
     check("A PlaybackInfo own channel = 200", A.post(f"/Items/{news}/PlaybackInfo", {"UserId": a_uid})[0] == 200)
     r = A.post(f"/Items/{movies}/PlaybackInfo", {"UserId": a_uid})
-    check("A PlaybackInfo tuner2 channel = 403 + message", r[0] == 403 and "not available" in text(r), text(r))
+    check("A PlaybackInfo tuner2 channel = 403 + generic message", r[0] == 403 and text(r) == DENIED, text(r))
     r = A.get(f"/Items/{movies}/PlaybackInfo", userId=a_uid)
     check("A GET PlaybackInfo tuner2 channel = 403", r[0] == 403)
     check("B PlaybackInfo own channel = 200", B.post(f"/Items/{movies}/PlaybackInfo", {"UserId": b_uid})[0] == 200)
@@ -256,6 +258,37 @@ def main():
     n.ok(admin.post(f"/Users/{n.users_by_name(admin)['A']['Id']}/Policy", pol), "clear A's tags")
     check("admin policy edit re-synced (A's blocked tags restored)", wait_for(lambda: sorted(
         n.users_by_name(admin)["A"]["Policy"]["BlockedTags"]) == ["livetv-tuner2", "livetv-unassigned"], timeout=20))
+
+    print("== 12. native Live TV permission")
+    def set_policy(name, **changes):
+        u = n.users_by_name(admin)[name]
+        old = {k: u["Policy"][k] for k in changes}
+        n.ok(admin.post(f"/Users/{u['Id']}/Policy", dict(u["Policy"], **changes)), "policy")
+        return old
+
+    old_c = set_policy("C", EnableLiveTvAccess=True)
+    try:
+        C2, c2u, _ = n.login("C", "gate3-C-livetv-on")
+        st, ch = C2.get("/LiveTv/Channels", userId=c2u)
+        check("unmapped user with Live TV ON: channel list has no channels",
+              st == 200 and len(ch["Items"]) == 0, f"HTTP {st}, {len(ch['Items']) if st == 200 else '-'} channels")
+        r = C2.post(f"/Items/{news}/PlaybackInfo", {"UserId": c2u, "AutoOpenLiveStream": True})
+        check("unmapped user with Live TV ON: PlaybackInfo = 403 + generic message", r[0] == 403 and text(r) == DENIED, text(r))
+    finally:
+        set_policy("C", **old_c)
+        time.sleep(2)
+
+    old_a = set_policy("A", EnableLiveTvAccess=False)
+    try:
+        A2, a2u, _ = n.login("A", "gate3-A-livetv-off")
+        r = A2.post(f"/Items/{news}/PlaybackInfo", {"UserId": a2u, "AutoOpenLiveStream": True})
+        check("mapped user with native Live TV OFF: own channel PlaybackInfo = 403", r[0] == 403 and text(r) == DENIED, text(r))
+        r = A2.post("/LiveStreams/Open", {"OpenToken": t1_token, "UserId": a2u, "ItemId": news})
+        check("mapped user with native Live TV OFF: LiveStreams/Open own channel = 403", r[0] == 403, f"HTTP {r[0]}")
+    finally:
+        set_policy("A", **old_a)
+        time.sleep(2)
+    check("A plays again once native Live TV is back on", plays(A, a_uid, news)[0])
 
     print("== 10. logging")
     time.sleep(1)

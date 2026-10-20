@@ -83,10 +83,10 @@ public class Fix3CoreTests
     [Fact]
     public void IsExempt_AdminsAndUserlessApiKeysOnly()
     {
-        Assert.True(AccessPolicy.IsExempt(new Caller(UserA, false, true)));
-        Assert.True(AccessPolicy.IsExempt(new Caller(Guid.Empty, true, false)));
-        Assert.False(AccessPolicy.IsExempt(new Caller(UserA, true, false)));
-        Assert.False(AccessPolicy.IsExempt(new Caller(UserA, false, false)));
-        Assert.False(AccessPolicy.IsExempt(new Caller(Guid.Empty, false, false)));
+        Assert.True(AccessPolicy.IsExempt(new Caller(UserA, false, true, true)));
+        Assert.True(AccessPolicy.IsExempt(new Caller(Guid.Empty, true, false, true)));
+        Assert.False(AccessPolicy.IsExempt(new Caller(UserA, true, false, true)));
+        Assert.False(AccessPolicy.IsExempt(new Caller(UserA, false, false, true)));
+        Assert.False(AccessPolicy.IsExempt(new Caller(Guid.Empty, false, false, true)));
     }
 }

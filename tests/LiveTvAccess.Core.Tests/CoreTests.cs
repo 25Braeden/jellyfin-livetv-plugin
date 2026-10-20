@@ -111,12 +111,12 @@ public class CoreTests
     public void AccessPolicy_Decisions()
     {
         var map = Map();
-        Assert.Equal(AccessDecision.Allow, AccessPolicy.Decide(new Caller(UserA, false, false), map, "tuner1"));
-        Assert.Equal(AccessDecision.DenyOtherTuner, AccessPolicy.Decide(new Caller(UserA, false, false), map, "tuner2"));
-        Assert.Equal(AccessDecision.DenyUnknownTuner, AccessPolicy.Decide(new Caller(UserA, false, false), map, null));
-        Assert.Equal(AccessDecision.DenyNoTuner, AccessPolicy.Decide(new Caller(UserC, false, false), map, "tuner1"));
-        Assert.Equal(AccessDecision.Allow, AccessPolicy.Decide(new Caller(UserC, false, true), map, null));
-        Assert.Equal(AccessDecision.Allow, AccessPolicy.Decide(new Caller(Guid.Empty, true, false), map, null));
-        Assert.Equal(AccessDecision.DenyNoTuner, AccessPolicy.Decide(new Caller(Guid.Empty, false, false), map, "tuner1"));
+        Assert.Equal(AccessDecision.Allow, AccessPolicy.Decide(new Caller(UserA, false, false, true), map, "tuner1"));
+        Assert.Equal(AccessDecision.DenyOtherTuner, AccessPolicy.Decide(new Caller(UserA, false, false, true), map, "tuner2"));
+        Assert.Equal(AccessDecision.DenyUnknownTuner, AccessPolicy.Decide(new Caller(UserA, false, false, true), map, null));
+        Assert.Equal(AccessDecision.DenyNoTuner, AccessPolicy.Decide(new Caller(UserC, false, false, true), map, "tuner1"));
+        Assert.Equal(AccessDecision.Allow, AccessPolicy.Decide(new Caller(UserC, false, true, true), map, null));
+        Assert.Equal(AccessDecision.Allow, AccessPolicy.Decide(new Caller(Guid.Empty, true, false, true), map, null));
+        Assert.Equal(AccessDecision.DenyNoTuner, AccessPolicy.Decide(new Caller(Guid.Empty, false, false, true), map, "tuner1"));
     }
 }

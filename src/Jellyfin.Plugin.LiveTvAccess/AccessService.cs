@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
+using System.Threading;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.LiveTvAccess.Configuration;
@@ -33,6 +34,7 @@ public class AccessService
     private readonly object _lock = new();
     private AccessSnapshot? _snapshot;
     private long _version;
+    private long _lastUnrecognizedWarning = long.MinValue / 2;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AccessService"/> class.
@@ -97,24 +99,48 @@ public class AccessService
     }
 
     /// <summary>
-    /// Gets the caller from the request principal. Returns <c>null</c> for anonymous requests.
+    /// Gets the caller from the request principal: <c>null</c> for anonymous requests (Jellyfin's own authorization
+    /// decides those). An authenticated principal without a usable user claim, or whose user no longer exists,
+    /// becomes a caller with no Live TV access, so it is denied rather than treated as anonymous.
     /// </summary>
     /// <param name="principal">The request principal.</param>
-    /// <returns>The caller, or <c>null</c>.</returns>
+    /// <returns>The caller, or <c>null</c> for anonymous requests.</returns>
     public Caller? GetCaller(ClaimsPrincipal principal)
     {
         ArgumentNullException.ThrowIfNull(principal);
 
         var isApiKey = bool.TryParse(principal.FindFirstValue(IsApiKeyClaim), out var k) && k;
-        var hasUserId = Guid.TryParse(principal.FindFirstValue(UserIdClaim), out var userId);
-        if (!isApiKey && (!hasUserId || userId == Guid.Empty))
+        var hasUserId = Guid.TryParse(principal.FindFirstValue(UserIdClaim), out var userId) && userId != Guid.Empty;
+        if (hasUserId)
+        {
+            var user = _userManager.GetUserById(userId);
+            return new Caller(
+                userId,
+                isApiKey,
+                IsAdministrator: user is not null && user.HasPermission(PermissionKind.IsAdministrator),
+                HasLiveTvAccess: user is not null && user.HasPermission(PermissionKind.EnableLiveTvAccess));
+        }
+
+        if (isApiKey)
+        {
+            // Jellyfin API keys carry no user (Jellyfin.Server.Implementations/Security/AuthorizationContext.cs:195-217).
+            return new Caller(Guid.Empty, IsApiKey: true, IsAdministrator: false, HasLiveTvAccess: false);
+        }
+
+        if (principal.Identity?.IsAuthenticated != true)
         {
             return null;
         }
 
-        var user = hasUserId && userId != Guid.Empty ? _userManager.GetUserById(userId) : null;
-        var isAdmin = user is not null && user.HasPermission(PermissionKind.IsAdministrator);
-        return new Caller(hasUserId ? userId : Guid.Empty, isApiKey, isAdmin);
+        // Authenticated, but neither a user nor an API key we recognize: Jellyfin's claim contract may have changed.
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastUnrecognizedWarning) > (long)TimeSpan.FromMinutes(5).TotalMilliseconds)
+        {
+            Interlocked.Exchange(ref _lastUnrecognizedWarning, now);
+            _logger.LogWarning("LiveTvAccess: authenticated request without a recognizable user claim; denying Live TV access (has Jellyfin's claim format changed?)");
+        }
+
+        return new Caller(Guid.Empty, IsApiKey: false, IsAdministrator: false, HasLiveTvAccess: false);
     }
 
     /// <summary>

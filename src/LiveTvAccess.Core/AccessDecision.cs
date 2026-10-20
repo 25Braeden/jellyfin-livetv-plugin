@@ -19,4 +19,7 @@ public enum AccessDecision
 
     /// <summary>The plugin has not completed its first sync yet (fail closed).</summary>
     DenyNotReady,
+
+    /// <summary>The user lacks Jellyfin's native Live TV permission, or couldn't be identified.</summary>
+    DenyNoLiveTvAccess,
 }

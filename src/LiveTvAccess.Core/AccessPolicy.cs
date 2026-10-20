@@ -8,6 +8,12 @@ namespace LiveTvAccess.Core;
 public static class AccessPolicy
 {
     /// <summary>
+    /// The one message returned to clients for every denial. The reason is logged server-side only, so a
+    /// response can't be used to learn whether a channel or stream exists or which tuner it is on.
+    /// </summary>
+    public const string DeniedMessage = "This Live TV channel isn't available for your account.";
+
+    /// <summary>
     /// Gets whether a caller is never restricted: administrators, and API keys that carry no user.
     /// The filter and <see cref="Decide(Caller, UserTunerMap, string?, bool)"/> both use this one rule.
     /// </summary>
@@ -50,6 +56,13 @@ public static class AccessPolicy
             return AccessDecision.DenyNotReady;
         }
 
+        // Jellyfin's own "Allow Live TV access" permission applies on top of the tuner map. Callers the plugin
+        // can't identify have it false.
+        if (!caller.HasLiveTvAccess)
+        {
+            return AccessDecision.DenyNoLiveTvAccess;
+        }
+
         var own = map.GetTuner(caller.UserId);
         if (own is null)
         {
@@ -67,16 +80,10 @@ public static class AccessPolicy
     }
 
     /// <summary>
-    /// Gets the plain message returned to the client for a denial.
+    /// Gets the plain message returned to the client for a decision.
     /// </summary>
     /// <param name="decision">The decision.</param>
-    /// <returns>The message.</returns>
-    public static string Message(AccessDecision decision) => decision switch
-    {
-        AccessDecision.DenyNoTuner => "Live TV is not available for your account.",
-        AccessDecision.DenyOtherTuner => "This channel is not available for your account.",
-        AccessDecision.DenyUnknownTuner => "This channel is not available: its tuner is not configured.",
-        AccessDecision.DenyNotReady => "Live TV is starting up. Try again in a moment.",
-        _ => string.Empty,
-    };
+    /// <returns><see cref="DeniedMessage"/> for every denial; empty for <see cref="AccessDecision.Allow"/>.</returns>
+    public static string Message(AccessDecision decision)
+        => decision == AccessDecision.Allow ? string.Empty : DeniedMessage;
 }

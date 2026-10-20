@@ -313,6 +313,10 @@ public sealed class World
 
     /// <summary>Runs the filter; returns the short-circuit status code, or null if the action ran.</summary>
     public async Task<int?> RunFilter(ClaimsPrincipal principal, IDictionary<string, object?> arguments, string method = "POST", string? template = null)
+        => (await RunFilterWithBody(principal, arguments, method, template)).Status;
+
+    /// <summary>Runs the filter; returns the short-circuit status and body text, or (null, null) if the action ran.</summary>
+    public async Task<(int? Status, string? Body)> RunFilterWithBody(ClaimsPrincipal principal, IDictionary<string, object?> arguments, string method = "POST", string? template = null)
     {
         var filter = new Filters.LiveTvAccessFilter(Access, Signals, NullLogger<Filters.LiveTvAccessFilter>.Instance);
         var context = Context(principal, arguments, method, template);
@@ -322,6 +326,6 @@ public sealed class World
             ran = true;
             return Task.FromResult(new ActionExecutedContext(context, new List<IFilterMetadata>(), context.Controller));
         });
-        return ran ? null : (context.Result as ContentResult)?.StatusCode ?? -1;
+        return ran ? (null, null) : ((context.Result as ContentResult)?.StatusCode ?? -1, (context.Result as ContentResult)?.Content);
     }
 }

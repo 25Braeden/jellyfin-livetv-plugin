@@ -34,7 +34,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG1_AuthenticatedPrincipalWithoutUserClaim_IsDenied()
     {
         var w = new World();
@@ -69,7 +68,6 @@ public class ReviewReproTests
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public async Task CG7_MappedUserWithNativeLiveTvDisabled_IsDenied()
     {
         var w = new World();
@@ -157,13 +155,12 @@ public class ReviewReproTests
     public async Task CG16_ApiKeyPrincipalWithUserId_FilterAgreesWithCorePolicy()
     {
         var w = new World();
-        var policy = AccessPolicy.Decide(new Caller(w.UserA.Id, true, false), w.Access.Snapshot.Map, "tuner2");
+        var policy = AccessPolicy.Decide(new Caller(w.UserA.Id, true, false, true), w.Access.Snapshot.Map, "tuner2");
         Assert.NotEqual(AccessDecision.Allow, policy);
         Assert.Equal(403, await w.RunFilter(World.Principal(w.UserA.Id, isApiKey: true), Item(w.Tuner2Channel.Id)));
     }
 
     [Fact]
-    [Trait("Category", KnownIssue)]
     public void GM9_AllDenialsUseOneGenericMessage()
     {
         var messages = new HashSet<string>

@@ -378,3 +378,20 @@ the next refresh took 4 s. Gate 3 acceptance then passed 45/45.
 - **One API-key rule:** `AccessPolicy.IsExempt` (admins, and API keys without a user) is used by the filter, by
   `Decide`, and by the admin-write re-sync hook. An API-key principal that carries a user id is treated as that
   user.
+
+## Gate 3.5 phase 2, fix 4: native permission, unrecognized callers, one message (2026-10-19)
+
+- **Native Live TV permission:** `Caller.HasLiveTvAccess` comes from the user's `EnableLiveTvAccess`; Core
+  `Decide` denies a non-exempt caller without it (`DenyNoLiveTvAccess`), whatever the tuner map says. Jellyfin
+  itself only enforces this permission on `/LiveTv/*`, not on PlaybackInfo, LiveStreams/Open or streaming.
+  Admins and user-less API keys stay exempt.
+- **Unrecognized callers:** `GetCaller` now distinguishes anonymous requests (no authenticated identity; still
+  `null`, Jellyfin decides) from authenticated principals with no usable user claim, or whose user no longer
+  exists. Those become a caller with no Live TV access, so they are denied rather than treated as anonymous; a
+  warning (at most every 5 minutes) flags possible claim-format drift.
+- **One message:** every denial returns `AccessPolicy.DeniedMessage` ("This Live TV channel isn't available for
+  your account."), including "starting up"; the reason is logged server-side only (closes the GM9 oracle).
+- Acceptance (`gate3_test.py` section 12, 50/50): an unmapped user with native Live TV ON sees 0 channels and gets
+  403 on PlaybackInfo; a mapped user with native Live TV OFF gets 403 on PlaybackInfo and LiveStreams/Open for
+  their own channel, and plays again when it is turned back on.
+- Still open (Fix 5, default-deny): GM2/CG3 timer bodies, CG2 unrecognized token providers, GM5 id arrays.
