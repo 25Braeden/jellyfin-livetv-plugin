@@ -387,10 +387,19 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
 
             pages++;
 
-            // A user change that arrived mid-pass is applied now, not after the remaining pages.
+            // A user change that arrived mid-pass is applied now, not after the remaining pages. If that fails, put the
+            // user work back: the outer retry only re-queues what this pass started with.
             if (Interlocked.Exchange(ref _usersDirty, 0) == 1)
             {
-                users += await SyncUsersAsync(pass, ct).ConfigureAwait(false);
+                try
+                {
+                    users += await SyncUsersAsync(pass, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    Interlocked.Exchange(ref _usersDirty, 1);
+                    throw;
+                }
             }
         }
 

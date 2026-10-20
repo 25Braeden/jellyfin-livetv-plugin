@@ -910,3 +910,16 @@ value. They are:
 - the startup version line.
 
 Denial logs carry GUIDs, or a short hash for anything else (fix 5d); self-check hosts are redacted (fix 7).
+
+### R5. Failed mid-pass user sync is retried (Sol #2, first part)
+
+**Confirmed in code.** A user change that arrives during a channels-only pass is picked up between pages
+(`TagSyncService.cs:391`), which clears `_usersDirty`. If that `SyncUsersAsync` throws, the outer catch re-queues
+users only when the pass started with them (`:237-240`). The work was lost until another signal or the 15-minute
+users pass. It now sets `_usersDirty` again before rethrowing. A test (it failed first) fails the interleaved save
+once and checks that a retried users pass repairs the user's blocked tags.
+
+**Sol #2, second part (no rollback of `SetPreference` when the save fails): not reproducible on Jellyfin.**
+`UserManager.GetUsers()` loads fresh entities from the database on every call (`UserManager.cs:99-104`), so a failed
+save leaves the stored value unchanged and the next pass sees the difference again. The reviewer's harness reused one
+in-memory object across passes.

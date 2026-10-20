@@ -25,6 +25,7 @@
 | 2026-10-20 | Final review R2: Live TV listings bound to the caller (POST LiveTv/Programs, Q1) | 7c67612 | unit green; Gate 3 at the end of the series |
 | 2026-10-20 | Final review R3: self-check accepts only scrubber-handled response shapes; unexpected shapes refused (Sol #3) | 0a9f104 | unit green; Gate 3 at the end of the series |
 | 2026-10-20 | Final review R4: duplicate-tuner warning logs host + hash, not the URL (Sol #4) | 625325b | unit green; Gate 3 at the end of the series |
+| 2026-10-20 | Final review R5: failed mid-pass user sync re-queued (Sol #2) | 4be4469 | unit green; Gate 3 at the end of the series |
 
 ## Scale test (16,000 channels), 2026-10-19
 
