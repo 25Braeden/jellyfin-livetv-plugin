@@ -629,6 +629,69 @@ def main():
         n.run_task(admin, "RefreshGuide")
         wait_for(lambda: tags_match(admin, aid, n.expected_channels()))
 
+    print("== 18. no untracked static streams of Live TV channels (fix 5e)")
+    A8, a8u, _ = n.login("A", "gate3-A-fix5e")
+    B8, b8u, _ = n.login("B", "gate3-B-fix5e")
+    sports = channel(expected, "Test Sports", "tuner1")
+    lib8 = library_fixture.main()
+
+    def first_bytes(api, path, timeout=20):
+        """Status and the first 64 KiB of a (possibly endless) stream; api None = anonymous."""
+        headers = {"Authorization": api.auth} if api else {}
+        try:
+            with urllib.request.urlopen(urllib.request.Request(n.BASE + path, headers=headers), timeout=timeout) as r:
+                return r.status, r.read(65536)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except Exception as e:  # noqa: BLE001 - report timeouts as a status
+            return type(e).__name__, b""
+
+    def upstream_hits(since, marker):
+        logs = subprocess.run(["docker", "logs", "--since", since, "fakestreams"], capture_output=True, text=True)
+        return (logs.stdout + logs.stderr).count(marker)
+
+    params3 = ";".join("true" if i == 3 else "" for i in range(29))
+    st, ms8, ps8 = n.open_channel(A8, a8u, news)
+    try:
+        check("A opens Test News (A's tuner now busy)", bool(ps8), f"HTTP {st}")
+        since8 = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        time.sleep(1)
+        for label, path in (
+            ("Videos stream?static=true", f"/Videos/{sports}/stream?static=true"),
+            ("Videos stream.ts?static=true", f"/Videos/{sports}/stream.ts?static=true"),
+            ("Videos stream, legacy params field 3 = true", f"/Videos/{sports}/stream?params={urllib.parse.quote(params3)}"),
+            ("Audio stream?static=true", f"/Audio/{sports}/stream?static=true"),
+            ("UniversalAudio", f"/Audio/{sports}/universal?userId={a8u}"),
+        ):
+            st, body = first_bytes(A8, path)
+            check(f"A, tuner busy, {label} of Test Sports = 403 + generic message", st == 403 and body.decode(errors="replace") == DENIED, f"HTTP {st}")
+        st, _ = first_bytes(A8, f"/Videos/{news}/stream?static=true")
+        check("A static stream of the open channel itself, without its live stream id = 403", st == 403, f"HTTP {st}")
+        time.sleep(1)
+        check("denied static requests made no upstream request", upstream_hits(since8, "ch=sports1") == 0)
+        q = urllib.parse.urlencode({"static": "true", "mediaSourceId": ms8["Id"], "liveStreamId": ms8["LiveStreamId"]})
+        st, body = first_bytes(A8, f"/Videos/{news}/stream?{q}")
+        check("A static stream WITH A's own open live stream id = allowed (tracked)", st == 200 and len(body) > 0, f"HTTP {st}, {len(body)} bytes")
+    finally:
+        if ps8:
+            stop(A8, ms8, ps8, news)
+        time.sleep(2)
+
+    for who, api, uid, cid in (("A", A8, a8u, news), ("B", B8, b8u, movies)):
+        ok8, detail8 = plays(api, uid, cid)
+        check(f"{who} tracked path still plays (open -> HLS)", ok8, detail8)
+        time.sleep(2)
+    C8, c8u, _ = n.login("C", "gate3-C-fix5e")
+    for who, api in (("A", A8), ("C", C8), ("anonymous", None)):
+        st, body = first_bytes(api, f"/Videos/{lib8['Movie']}/stream?static=true")
+        check(f"{who} library movie stream?static=true still works", st == 200 and len(body) > 0, f"HTTP {st}")
+        st, body = first_bytes(api, f"/Audio/{lib8['Audio']}/stream.mp3?static=true")
+        check(f"{who} library song stream?static=true still works", st == 200 and len(body) > 0, f"HTTP {st}")
+        st, body = first_bytes(api, f"/Audio/{lib8['Audio']}/stream?params={urllib.parse.quote(params3)}")
+        check(f"{who} library song via legacy params static still works", st == 200 and len(body) > 0, f"HTTP {st}")
+    st, body = first_bytes(A8, f"/Audio/{lib8['Audio']}/universal?userId={a8u}&container=mp3")
+    check("A UniversalAudio for a library song still works", st == 200 and len(body) > 0, f"HTTP {st}")
+
     print("== 10. logging")
     time.sleep(1)
     log = subprocess.run(["docker", "logs", "--since", since, "jellyfin-dev"], capture_output=True, text=True)

@@ -122,6 +122,8 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         }
 
         var resolvedTarget = false;
+        var namesLiveTvItem = false;
+        var tracked = false;
         foreach (var value in values)
         {
             var target = _access.Classify(snapshot, value, LiveTvEndpoints.IsOpening(action));
@@ -133,6 +135,21 @@ public class LiveTvAccessFilter : IAsyncActionFilter
 
             // A resolved Live TV target, or a resolved stream/token of another provider.
             resolvedTarget |= target.Kind == TargetKind.LiveTv || (target.Kind == TargetKind.NotLiveTv && value.Guid is null);
+            if (target.Kind == TargetKind.LiveTv)
+            {
+                var isTracked = _access.IsTrackedLiveStream(value);
+                tracked |= isTracked;
+                namesLiveTvItem |= !isTracked;
+            }
+        }
+
+        // A static stream of a channel without an open live stream: Jellyfin would proxy the provider directly,
+        // never opening (or counting) a tuner stream (VideosController.cs:456-460, AudioHelper.cs:116-119).
+        var isStatic = LiveTvEndpoints.IsStaticStream(action, context.ActionArguments);
+        var staticDecision = AccessPolicy.DecideStatic(caller, isStatic, namesLiveTvItem, tracked);
+        if (staticDecision != AccessDecision.Allow)
+        {
+            return Deny(context, caller, staticDecision, "static stream", action?.ActionName ?? "(unknown)", started, values.Count);
         }
 
         if (action is not null && !resolvedTarget && LiveTvEndpoints.RequireTarget.Contains((action.ControllerName, action.ActionName)))

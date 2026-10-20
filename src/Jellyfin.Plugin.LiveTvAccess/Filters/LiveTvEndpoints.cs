@@ -91,4 +91,45 @@ public static class LiveTvEndpoints
     /// <returns><c>true</c> if it can open a stream.</returns>
     public static bool IsOpening(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action)
         => action?.ControllerName is "MediaInfo" or "Videos" or "Audio" or "DynamicHls" or "UniversalAudio";
+
+    /// <summary>
+    /// Gets whether a request is, or may be served as, a static (direct) stream. Videos / Audio stream actions take
+    /// <c>static</c>, also settable through field 3 of the legacy <c>params</c> string (StreamingHelpers.cs:405-421);
+    /// UniversalAudio decides itself and may stream statically or redirect (UniversalAudioController.cs:176-182).
+    /// </summary>
+    /// <param name="action">The action, if it is a controller action.</param>
+    /// <param name="arguments">The action arguments.</param>
+    /// <returns><c>true</c> if it may be static.</returns>
+    public static bool IsStaticStream(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action, IDictionary<string, object?> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        if (action?.ControllerName is "UniversalAudio")
+        {
+            return true;
+        }
+
+        if (action?.ControllerName is not ("Videos" or "Audio"))
+        {
+            return false;
+        }
+
+        foreach (var (name, value) in arguments)
+        {
+            if (string.Equals(name, "static", StringComparison.OrdinalIgnoreCase) && value is true)
+            {
+                return true;
+            }
+
+            if (string.Equals(name, "params", StringComparison.OrdinalIgnoreCase) && value is string legacy)
+            {
+                var fields = legacy.Split(';');
+                if (fields.Length > 3 && string.Equals(fields[3], "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 }

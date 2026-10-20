@@ -586,3 +586,70 @@ Programs/Recommended, LiveTv/Info, GuideInfo, Search/Hints, System/Configuration
   consumer can close it repeatedly and end it for the others. Within one tuner (one user per tuner) this only affects
   that user's own devices. Impact on Gate 4: per-user accounting must count devices or sessions, not trust consumer
   counts, and any "newest stream wins" policy must close streams through the plugin's own bookkeeping.
+
+## Gate 3.5 phase 2, fix 5e: no untracked static streams of Live TV channels (2026-10-20)
+
+**Found by the fix 5d independent check, confirmed live.** `GET /Videos/{channel}/stream?static=true` with no live
+stream id doesn't open a live stream. `StreamingHelpers.cs:117-137` takes the channel's media source as is, and
+`VideosController.cs:456-460` (Audio: `AudioHelper.cs:116-119`) proxies the provider URL through
+`FileStreamResponseHelpers.cs:29-96`. No stream is opened, so the M3U stream limit (`M3UTunerHost.cs:80-90`) never
+applies. Live: with A's tuner busy, a normal open of a second channel got 409, but `static=true` on it returned
+video. The provider's raw response (for an HLS source, a playlist that may carry credentialed URLs) goes straight to
+the client.
+
+**Fix.** For non-exempt callers, a request that may be a static stream and names a Live TV channel or program is
+denied (generic 403, `AccessDecision.DenyUntrackedStream`, `AccessPolicy.DecideStatic`). This applies unless the
+request also carries a tracked stream: an open live stream id, or the play session of a running job on one
+(`AccessService.IsTrackedLiveStream`). Those are already counted by Jellyfin and tuner-checked by the plugin.
+Static with the caller's own open live stream is the tracked direct-stream path and stays allowed (owner decision).
+A play session id that isn't a running job doesn't count as tracked, even if it happens to be an item id.
+
+**Ways to skip the tracked path, checked:**
+
+| Path | Result |
+|---|---|
+| `Videos/{id}/stream`, `stream.{container}` (and their HEAD routes, same actions) with `static=true` | Closed |
+| The same with legacy `params` field 3 = `true` (`StreamingHelpers.cs:405-421`) | Closed |
+| `Audio/{id}/stream`, `stream.{container}` with `static` or params field 3 | Closed |
+| `Audio/{id}/universal`: may stream statically without a live stream, or redirect to `mediaSource.Path` (`UniversalAudioController.cs:176-182`) | Closed: denied for Live TV items (M3U channels are video; nothing legitimate uses it) |
+| Non-static progressive streams, incl. `videoCodec=copy&audioCodec=copy` (container copy) | Tracked: ffmpeg path, `TranscodeManager.cs:662-669` opens the live stream. Unchanged |
+| DynamicHls (master / main / variant, incl. copy codecs) | Tracked, same reason. Unchanged |
+| Stream request with no open token or live stream id, non-static | Tracked: opened by the transcode manager. Unchanged |
+| `Items/{id}/File`, `Items/{id}/Download` | No proxy: they serve `item.Path` as a local file (`LibraryController.cs:105-113, 669-715`), and channel items have no Path |
+| `LiveTv/LiveStreamFiles`, `LiveTv/LiveRecordings` | Serve an already-open buffer (tracked); access restriction is fix 6 |
+| Legacy HLS file routes | Bound to a running job (fix 5c) |
+| Admins and API keys | Exempt, unchanged |
+
+Live (Gate 3, section 18), with A's tuner busy on Test News: all five static variants for Test Sports return 403,
+make no upstream request, and use the generic message. Static on the open channel without its live stream id is 403;
+with A's own live stream id it is 200. The tracked path (open -> HLS) still plays for A and B. Library static
+streams (movie, song, legacy params) still work for A, C and anonymous callers, and UniversalAudio still serves a
+library song.
+
+### Remaining gaps from the fix 5d check
+
+- **Gap 2: same stream URL on two tuners (config rule).** Two tuners must not list the same stream URL. Live stream ids
+  depend only on the URL (`LiveTvMediaSourceProvider.cs:301-303`, `M3UTunerHost.cs:195`). For a sharable stream,
+  fix 5d refuses the cross-tuner share. For a non-sharable one (HLS, or sharing off), B's new stream replaces A's in
+  `MediaSourceManager._openStreams` (`MediaSourceManager.cs:522`). When A's playback ends, B's stream is closed
+  (`TranscodeManager.cs:243-245`, `SessionManager.cs:325-351`), and A's original stream is orphaned, still holding a
+  tuner slot. This is interference, not access to another user's content. **Fix 7's self-check will warn about, or
+  refuse, a configuration where two tuners list the same stream URL.**
+- **Gap 3: killing another user's transcodes by device id (accepted risk).** A stream request with
+  `deviceId=<victim>` and no play session kills all of the victim's transcode jobs (`DynamicHlsController.cs:1528`,
+  `TranscodeManager.cs:202-204`). Accepted because:
+  - It's denial of service on in-progress playback, not access to a stream; the victim's client restarts playback.
+  - It needs the victim's device id. Non-admins only see other users' sessions with "Allow remote control of other
+    users" (`SessionManager.cs:1975-2010`), which is off by default. Keep it off for Live TV users.
+  - It's Jellyfin core behavior that affects library playback just as much.
+  - Binding `deviceId` to the caller would mean second-guessing Jellyfin's device registry and could break clients.
+- **Gap 4: raw logo URL in image info (accepted risk).** `GET /Items/{channel}/Images` returns `ImageInfo.Path`,
+  which is the playlist's `tvg-logo` URL until Jellyfin caches the image (`ImageController.cs:1800-1802`,
+  `GuideManager.cs:447-457`). Accepted because:
+  - Only the user's own tuner's channels are reachable.
+  - A logo URL isn't a stream URL; at most it reveals the logo host.
+  - Once cached, it is a local path.
+  - Scrubbing it would add another response type to keep in step with Jellyfin for little gain.
+  - Config rule: logo URLs must not carry credentials.
+  - Tuner `UserAgent`/`DeviceId`/`FriendlyName` in the Live TV config are left visible for the same reason (not
+    secrets), unless a provider treats the user agent as one.

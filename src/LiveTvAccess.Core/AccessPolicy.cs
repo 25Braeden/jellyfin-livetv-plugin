@@ -136,4 +136,19 @@ public static class AccessPolicy
         // Same checks as for one of the user's own channels: ready, native permission, and having a tuner.
         return Decide(caller, map, map.GetTuner(caller.UserId), isReady);
     }
+
+    /// <summary>
+    /// Decides a static (direct) stream request. Jellyfin only opens, and so counts, a live stream on the transcode
+    /// path or when the request carries an open live stream; a static request for a channel without one proxies the
+    /// provider directly (Jellyfin.Api/Controllers/VideosController.cs:456-460), bypassing the tuner limit.
+    /// </summary>
+    /// <param name="caller">The caller.</param>
+    /// <param name="isStatic">Whether the request is (or may be served as) a static stream.</param>
+    /// <param name="namesLiveTvItem">Whether it names a Live TV channel or program.</param>
+    /// <param name="hasTrackedLiveStream">Whether it carries an open live stream (already tuner-checked).</param>
+    /// <returns>The decision.</returns>
+    public static AccessDecision DecideStatic(Caller caller, bool isStatic, bool namesLiveTvItem, bool hasTrackedLiveStream)
+        => !IsExempt(caller) && isStatic && namesLiveTvItem && !hasTrackedLiveStream
+            ? AccessDecision.DenyUntrackedStream
+            : AccessDecision.Allow;
 }

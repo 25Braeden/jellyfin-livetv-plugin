@@ -34,4 +34,8 @@ public enum AccessDecision
 
     /// <summary>An endpoint that needs a Live TV target had none.</summary>
     DenyMissingTarget,
+
+    /// <summary>A static (direct) stream of a Live TV channel without the caller's own open live stream: Jellyfin
+    /// would proxy the provider without opening a tracked stream, bypassing the tuner limit.</summary>
+    DenyUntrackedStream,
 }

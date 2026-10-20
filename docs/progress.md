@@ -16,6 +16,7 @@
 | 2026-10-19 | Gate 3.5 fix 5b: anonymous callers, legacy params, play sessions | 82bb969 | 104/104 acceptance |
 | 2026-10-19 | Gate 3.5 fix 5c: legacy HLS routes bound to running jobs | 29124c3 | 119/119 acceptance |
 | 2026-10-19 | Gate 3.5 fix 5d: open-token source, cross-tuner sharing, hidden upstream URLs | 93eb2b8 | 143/143 acceptance |
+| 2026-10-20 | Gate 3.5 fix 5e: no untracked static streams of Live TV channels; gaps 2-4 documented | f565bc4 | 164/164 acceptance |
 
 ## Scale test (16,000 channels), 2026-10-19
 

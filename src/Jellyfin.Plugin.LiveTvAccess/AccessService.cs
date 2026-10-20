@@ -306,6 +306,36 @@ public class AccessService
     }
 
     /// <summary>
+    /// Gets whether an identifier is an open live stream, or a running transcoding job on one: a stream Jellyfin has
+    /// opened, and so counts against the tuner limit. Its tuner is checked separately.
+    /// </summary>
+    /// <param name="value">The identifier.</param>
+    /// <returns><c>true</c> if it is a tracked live stream.</returns>
+    public bool IsTrackedLiveStream(Filters.CollectedValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        try
+        {
+            if (value.Hint == Filters.ValueHint.PlaySessionId)
+            {
+                var job = _transcodeManager.GetTranscodingJob(value.Raw ?? value.Text);
+                return job is not null && !string.IsNullOrEmpty(job.LiveStreamId ?? job.MediaSource?.LiveStreamId);
+            }
+
+            return value.Guid is null
+                && ProviderString.Classify(value.Text, out _) is ProviderStringKind.LiveTvStreamId or ProviderStringKind.OtherProvider
+                && _mediaSourceManager.GetLiveStreamInfo(value.Text) is not null;
+        }
+#pragma warning disable CA1031 // Can't tell: not tracked (fail closed).
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            _logger.LogWarning(ex, "LiveTvAccess: could not look up a live stream");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// The tuner Jellyfin would actually use to serve this channel: an already-open, sharable stream of the same
     /// media source is handed out instead of opening a new one, even if it is on another tuner (possible when both
     /// playlists list the same stream URL).
