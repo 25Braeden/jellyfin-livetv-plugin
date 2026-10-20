@@ -536,3 +536,53 @@ Live acceptance (`gate3_test.py` section 16, 119/119): Live TV HLS uses the lega
 running live job segment works (A1); B gets 403 on A's job; empty item id, `.m3u8` request, encoded traversal, a
 foreign job name, a finished job and the raw `.ts` buffer name (video and audio routes) all get 403; library HLS uses
 `hls1` and plays with a real `libx264` transcode by Jellyfin's ffmpeg.
+
+## Gate 3.5 phase 2, fix 5d: open-token media source, cross-tuner sharing, hidden upstream URLs (2026-10-19)
+
+**Found by a narrow trace of the stream-open path, confirmed live.** A Live TV open token is
+`{provider}_LiveTvChannel_{channelId}_{mediaSourceId}`. Jellyfin shares any already-open stream whose id equals the
+third part, without checking channel or tuner (`DefaultLiveTvService.cs:466-476`). A, opening A's own tuner-1 channel
+with B's media source id, was handed **B's open tuner-2 stream**, including its raw upstream URL in `Path`.
+
+1. **Open-token media source (fixed).** The third part must be empty, the token's own channel id, or that channel's
+   own media source id: md5(stream URL), which is the last 32 characters of the M3U channel's ExternalId
+   (`M3uParser.cs:104`, `M3UTunerHost.cs:195`; `JellyfinIds.M3uMediaSourceId`). Anything else gets the generic 403.
+2. **Accidental cross-tuner sharing (fixed by detection).** If both playlists list the same stream URL, the media
+   source ids are equal, and Jellyfin would hand A the tuner-2 stream B already has open. For actions that can open a
+   stream (MediaInfo, Videos, Audio, DynamicHls, UniversalAudio), the plugin computes the live stream id Jellyfin would
+   reuse (`{provider}_{service}_{sourceId}`, `JellyfinIds.LiveTvStreamId`). If that stream is open, sharable, and on
+   another tuner, the tuner checked is the one Jellyfin would actually use. So A is refused (403) while B's twin is
+   open, and can open normally once it closes. **Config rule:** tuners should not list the same stream URL;
+   otherwise users of different tuners block each other on that channel.
+3. **Upstream URLs hidden from non-admins (fixed).** `ResponseScrubber`, run after the action for every non-exempt
+   caller, blanks `Path`, `EncoderPath` and `RequiredHttpHeaders` on Live TV media sources in `PlaybackInfoResponse`,
+   `LiveStreamResponse`, `BaseItemDto` (and lists / `QueryResult`), and `SessionInfoDto` now-playing items. It also
+   blanks tuner `Url`/`Source` and guide-provider `Path`/`Username`/`Password`/`ListingsId` in the Live TV
+   configuration. **`GET /System/Configuration/livetv` was readable by any logged-in user**
+   (`ConfigurationController.cs:78`, class-level `[Authorize]` only), so every user could read every tuner's M3U URL.
+   Responses are deep-copied with Jellyfin's own JSON options before scrubbing (some DTOs are shared server state); if
+   a copy fails, the response is denied. Admins and API keys get the original object. Clients don't need these
+   values: with a tuner stream limit direct play is off (`M3UTunerHost.cs:148`), and playback goes through
+   `TranscodingUrl` / server stream URLs. Verified live: the web-client path (PlaybackInfo with a device profile ->
+   `TranscodingUrl` -> HLS) and manual HLS still play.
+
+**URL-leak survey (non-admin), live unless noted:** PlaybackInfo POST/GET, LiveStreams/Open, LiveTv/Channels (all
+fields), LiveTv/Channels/{id}, Items?ids&fields=Path,MediaSources, Users/{id}/Items/{id}, LiveTv/Programs (fields),
+Programs/Recommended, LiveTv/Info, GuideInfo, Search/Hints, System/Configuration and /livetv, System/Info and
+/Info/Public, and /Sessions while playing. None contains an upstream marker. By code: plugin configuration is admin-only
+(`PluginsController.cs:25`); server logs (`SystemController.cs:146-147, 206-207`) and the activity log
+(`ActivityLogController.cs:18`) are admin-only; WebSocket session updates go to admins only
+(`SessionInfoWebSocketListener.cs:69`). The plugin's own logs never contain URLs or full tokens.
+
+**Documented, not fixed (affects Gate 4, one stream per user):**
+- **Stream id collisions.** Two separate streams with the same stream URL get the same live stream id. The newer one
+  overwrites the older in `MediaSourceManager._openStreams` (`MediaSourceManager.cs:522`), and the older keeps
+  running untracked: it no longer counts towards the M3U stream limit (`M3UTunerHost.cs:80-90`) and is never closed.
+  This happens without sharing, e.g. a token with no media source part. Impact on Gate 4: a per-user limit can't rely
+  on `_openStreams` alone. The plugin should track the streams it admits per user, and the rule "no two tuners list
+  the same URL" avoids the cross-tuner variant.
+- **Shared stream closed by any consumer.** Sharers of one stream share its live stream id, and
+  `CloseLiveStream` just decrements a consumer count with no per-user tracking (`MediaSourceManager.cs:861-883`). Any
+  consumer can close it repeatedly and end it for the others. Within one tuner (one user per tuner) this only affects
+  that user's own devices. Impact on Gate 4: per-user accounting must count devices or sessions, not trust consumer
+  counts, and any "newest stream wins" policy must close streams through the plugin's own bookkeeping.

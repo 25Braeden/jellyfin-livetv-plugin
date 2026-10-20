@@ -198,6 +198,7 @@ public sealed class World
 
             var (stream, streamFake) = Fake<MediaBrowser.Controller.Library.ILiveStream>.Create();
             streamFake.Handlers["get_TunerHostId"] = _ => hostId;
+            streamFake.Handlers["get_EnableStreamSharing"] = _ => true;
             return stream;
         };
         var (config, configFake) = Fake<IConfigurationManager>.Create();
@@ -463,6 +464,20 @@ public sealed class World
         => RunAt(principal, arguments, null, null, method, template);
 
     /// <summary>Runs the filter as a specific controller action; <paramref name="routeArgs"/> are route-bound.</summary>
+    /// <summary>Runs the filter as a controller action whose action returns <paramref name="result"/>; returns the final result.</summary>
+    public async Task<IActionResult?> RunWithResult(ClaimsPrincipal principal, string controller, string action, IActionResult result, IDictionary<string, object?>? arguments = null)
+    {
+        var filter = new Filters.LiveTvAccessFilter(Access, Signals, NullLogger<Filters.LiveTvAccessFilter>.Instance);
+        var context = Context(principal, arguments ?? new Dictionary<string, object?>(), "GET", null, controller, action);
+        ActionExecutedContext? executed = null;
+        await filter.OnActionExecutionAsync(context, () =>
+        {
+            executed = new ActionExecutedContext(context, new List<IFilterMetadata>(), context.Controller) { Result = result };
+            return Task.FromResult(executed);
+        });
+        return executed?.Result ?? context.Result;
+    }
+
     public async Task<(int? Status, string? Body)> RunAt(
         ClaimsPrincipal principal,
         IDictionary<string, object?> arguments,

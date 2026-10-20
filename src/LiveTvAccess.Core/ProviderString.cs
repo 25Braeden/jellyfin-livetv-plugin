@@ -71,6 +71,34 @@ public static class ProviderString
     }
 
     /// <summary>
+    /// Splits a Live TV open token like Jellyfin does (LiveTvMediaSourceProvider.cs:131-136):
+    /// <c>{prefix}_{Type}_{channelId}[_{sourceId}]</c>.
+    /// </summary>
+    /// <param name="value">The token.</param>
+    /// <param name="channelIdText">The channel id part as sent.</param>
+    /// <param name="sourceId">The media source part, or <c>null</c> if absent.</param>
+    /// <returns><c>false</c> if it isn't a Live TV open token.</returns>
+    public static bool TrySplitLiveTvOpenToken(string? value, out string channelIdText, out string? sourceId)
+    {
+        channelIdText = string.Empty;
+        sourceId = null;
+        if (Classify(value, out _) != ProviderStringKind.LiveTvOpenToken)
+        {
+            return false;
+        }
+
+        var keys = value!.Trim()[33..].Split('_', 3);
+        if (keys.Length < 2)
+        {
+            return false;
+        }
+
+        channelIdText = keys[1];
+        sourceId = keys.Length >= 3 ? keys[2] : null;
+        return true;
+    }
+
+    /// <summary>
     /// Gets whether a string is a GUID in any format Jellyfin's <c>new Guid(string)</c> accepts.
     /// </summary>
     /// <param name="value">The string.</param>

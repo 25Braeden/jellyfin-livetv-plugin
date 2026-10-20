@@ -12,6 +12,7 @@ Reads JELLYFIN_API_KEY from .env; never prints it.
 """
 
 import datetime as dt
+import json
 import pathlib
 import subprocess
 import sys
@@ -432,17 +433,18 @@ def main():
             stop(B5, ms_b, ps_b, movies)
         time.sleep(2)
 
-    # The .ts buffer URL (unauthenticated, read by Jellyfin's own ffmpeg) is unchanged until fix 6.
-    st, ms_l, ps_l = n.open_channel(A5, a5u, live)
+    # The .ts buffer URL (unauthenticated, read by Jellyfin's own ffmpeg) is unchanged until fix 6. Since fix 5d
+    # non-admins don't see media source paths, so the buffer URL is read through the admin API key.
+    st, ms_l, ps_l = n.open_channel(admin, aid, live)
     try:
         buffer_path = (ms_l.get("Path") or "") if ps_l else ""
-        check("A's .ts channel is served through the LiveStreamFiles buffer", "/LiveTv/LiveStreamFiles/" in buffer_path, buffer_path[-60:])
+        check("the .ts channel is served through the LiveStreamFiles buffer (seen via admin)", "/LiveTv/LiveStreamFiles/" in buffer_path, buffer_path[-60:])
         local = buffer_path[buffer_path.index("/LiveTv/"):] if "/LiveTv/" in buffer_path else "/LiveTv/LiveStreamFiles/x/stream.ts"
         st, body = anon_get(local, limit=4096)
         check("LiveStreamFiles buffer URL still readable without auth (fix 6 will restrict it)", st == 200 and len(body) > 0, f"HTTP {st}")
     finally:
         if ps_l:
-            stop(A5, ms_l, ps_l, live)
+            stop(admin, ms_l, ps_l, live)
         time.sleep(2)
     ok, detail = plays(A5, a5u, live)
     check(".ts playback via the buffer still works (HLS segment)", ok, detail)
@@ -488,9 +490,14 @@ def main():
         st, _ = anon_get(f"/Videos/{news}/{seg_url}")
         check("legacy segment of a finished job = 403", st == 403, f"HTTP {st}")
 
-    # The confirmed leak: the raw .ts buffer file name, read through the legacy route.
-    st, ms7, ps7 = n.open_channel(A6, a6u, live)
+    # The confirmed leak: the raw .ts buffer file name, read through the legacy route. (The buffer id is read via the
+    # admin API key: since fix 5d A's own response hides it.)
+    st, ms7, ps7 = n.open_channel(admin, aid, live)
     try:
+        st_a, ms_a, ps_a = n.open_channel(A6, a6u, live)
+        check("A's own open response hides the buffer path", bool(ps_a) and not ms_a.get("Path"), f"HTTP {st_a}")
+        if ps_a:
+            A6.post("/LiveStreams/Close", liveStreamId=ms_a["LiveStreamId"])
         unique = ms7["Path"].split("/LiveStreamFiles/")[1].split("/")[0] if ps7 else "x"
         time.sleep(2)
         st, _ = anon_get(f"/Videos/00000000000000000000000000000000/hls/{unique}/{unique}.ts")
@@ -501,7 +508,7 @@ def main():
         check("legacy audio route for a non-job file = 403", st == 403, f"HTTP {st}")
     finally:
         if ps7:
-            stop(A6, ms7, ps7, live)
+            stop(admin, ms7, ps7, live)
         time.sleep(2)
 
     # hls1 + a real ffmpeg transcode (forced by a low bitrate and size) still work for a library movie.
@@ -523,6 +530,104 @@ def main():
         log = subprocess.run(["docker", "logs", "--since", hls_since, "jellyfin-dev"], capture_output=True, text=True)
         ffmpeg = [l for l in (log.stdout + log.stderr).splitlines() if "/ffmpeg" in l and "libx264" in l]
         check("Jellyfin's own ffmpeg transcoded the movie (libx264)", bool(ffmpeg))
+
+    print("== 17. upstream URLs hidden, open-token source, cross-tuner sharing (fix 5d)")
+    MARKERS = ("fakestreams", "/tuners/", "LiveStreamFiles")
+    A7, a7u, _ = n.login("A", "gate3-A-fix5d")
+    B7, b7u, _ = n.login("B", "gate3-B-fix5d")
+
+    def leaks(body):
+        text = body if isinstance(body, str) else json.dumps(body)
+        return [m for m in MARKERS if m in text]
+
+    WEB_PROFILE = {
+        "MaxStreamingBitrate": 120000000,
+        "DirectPlayProfiles": [{"Container": "webm", "Type": "Video"}],
+        "TranscodingProfiles": [{"Container": "ts", "Type": "Video", "AudioCodec": "aac", "VideoCodec": "h264",
+                                 "Context": "Streaming", "Protocol": "hls", "MaxAudioChannels": "2", "MinSegments": 1,
+                                 "BreakOnNonKeyFrames": True}],
+    }
+    # Web-client path: PlaybackInfo with a device profile + auto-open, then its TranscodingUrl.
+    st, info = A7.post(f"/Items/{news}/PlaybackInfo", {"UserId": a7u, "AutoOpenLiveStream": True, "DeviceProfile": WEB_PROFILE}, userId=a7u)
+    ms7 = info["MediaSources"][0] if st == 200 else {}
+    try:
+        check("A PlaybackInfo (web profile, auto-open): no upstream URL in the response", st == 200 and not leaks(info), f"HTTP {st} {leaks(info) if st == 200 else ''}")
+        check("A PlaybackInfo: Path and RequiredHttpHeaders empty", st == 200 and not ms7.get("Path") and not ms7.get("RequiredHttpHeaders"), str(ms7.get("Path")))
+        turl = ms7.get("TranscodingUrl")
+        st2, master = raw_get(A7, turl) if turl else (None, b"")
+        sub = next((l for l in master.decode().splitlines() if l and not l.startswith("#")), None) if st2 == 200 else None
+        base = turl.split("?")[0].rsplit("/", 1)[0] if turl else ""
+        st3, media = raw_get(A7, f"{base}/{sub}", timeout=90) if sub else (st2, b"")
+        segs = [l for l in media.decode().splitlines() if l and not l.startswith("#")] if st3 == 200 else []
+        st4, seg = raw_get(A7, f"{base}/{segs[0]}", timeout=90) if segs else (st3, b"")
+        check("web-client path plays (TranscodingUrl -> HLS segment)", st4 == 200 and seg[:1] == b"G", f"HTTP {st2}/{st3}/{st4}")
+        st, sess = A7.get("/Sessions")
+        check("A GET /Sessions while playing: no upstream URL", st == 200 and not leaks(sess), f"HTTP {st} {leaks(sess) if st == 200 else ''}")
+    finally:
+        if ms7.get("LiveStreamId"):
+            stop(A7, ms7, info.get("PlaySessionId"), news)
+        time.sleep(2)
+
+    survey = {
+        "LiveStreams/Open (own)": lambda: A7.post("/LiveStreams/Open", {"OpenToken": t1_token, "UserId": a7u, "ItemId": news}),
+        "GET Items/{own}/PlaybackInfo": lambda: A7.get(f"/Items/{news}/PlaybackInfo", userId=a7u),
+        "LiveTv/Channels (all fields)": lambda: A7.get("/LiveTv/Channels", userId=a7u, fields="Path,MediaSources,MediaStreams,ChannelInfo", addCurrentProgram="true"),
+        "LiveTv/Channels/{own}": lambda: A7.get(f"/LiveTv/Channels/{news}", userId=a7u),
+        "Items?ids={own}&fields=Path,MediaSources": lambda: A7.get("/Items", userId=a7u, ids=news, fields="Path,MediaSources,MediaStreams"),
+        "Users/{id}/Items/{own}": lambda: A7.get(f"/Users/{a7u}/Items/{news}"),
+        "LiveTv/Programs (fields)": lambda: A7.get("/LiveTv/Programs", userId=a7u, fields="Path,MediaSources,ChannelInfo", limit=50),
+        "LiveTv/Programs/Recommended": lambda: A7.get("/LiveTv/Programs/Recommended", userId=a7u, isAiring="true", fields="Path,MediaSources"),
+        "LiveTv/Info": lambda: A7.get("/LiveTv/Info"),
+        "LiveTv/GuideInfo": lambda: A7.get("/LiveTv/GuideInfo"),
+        "Search/Hints": lambda: A7.get("/Search/Hints", userId=a7u, searchTerm="Test"),
+        "System/Configuration/livetv": lambda: A7.get("/System/Configuration/livetv"),
+        "System/Configuration": lambda: A7.get("/System/Configuration"),
+        "System/Info": lambda: A7.get("/System/Info"),
+        "System/Info/Public": lambda: A7.get("/System/Info/Public"),
+    }
+    for label, call in survey.items():
+        st, body = call()
+        found = leaks(body) if st == 200 else []
+        check(f"A {label}: no upstream URL", st != 200 or not found, f"HTTP {st} {found}")
+        if label == "LiveStreams/Open (own)" and st == 200:
+            A7.post("/LiveStreams/Close", liveStreamId=body["MediaSource"]["LiveStreamId"])
+    st, cfg = admin.get("/System/Configuration/livetv")
+    check("admin still sees the real tuner URLs", st == 200 and any("/tuners/" in (h.get("Url") or "") for h in cfg["TunerHosts"]))
+
+    # Crafted open token: A's own channel + B's media source id.
+    st_b, ms_b, ps_b = n.open_channel(B7, b7u, movies)
+    try:
+        crafted = f"{t1_token.split('_')[0]}_LiveTvChannel_{news}_{ms_b['Id']}"
+        st, res = A7.post("/LiveStreams/Open", {"OpenToken": crafted, "UserId": a7u, "ItemId": news})
+        check("A crafted token with B's media source id = 403 (B's stream not handed out)",
+              st == 403 and text((st, res)) == DENIED and ms_b["LiveStreamId"] not in json.dumps(res), f"HTTP {st}")
+    finally:
+        if ps_b:
+            stop(B7, ms_b, ps_b, movies)
+        time.sleep(2)
+
+    # Same stream URL on both tuners: B's tuner-2 twin is open -> A opening its own channel is refused.
+    original = TUNER2_M3U.read_text()
+    news_url = next(l for l in (n.tuner_file("tuner1")).read_text().splitlines() if "ch=news1" in l)
+    try:
+        TUNER2_M3U.write_text(original.replace(next(l for l in original.splitlines() if "ch=kids1" in l), news_url))
+        n.run_task(admin, "RefreshGuide")
+        twin = channel(n.expected_channels(), "Test Kids", "tuner2")
+        wait_for(lambda: tags_match(admin, aid, n.expected_channels()))
+        st_b, ms_b, ps_b = n.open_channel(B7, b7u, twin)
+        try:
+            st, _ = A7.post(f"/Items/{news}/PlaybackInfo", {"UserId": a7u, "AutoOpenLiveStream": True}, userId=a7u)
+            check("same URL on both tuners, B's twin open: A opening its own channel = 403", st == 403, f"HTTP {st}")
+        finally:
+            if ps_b:
+                stop(B7, ms_b, ps_b, twin)
+            time.sleep(3)
+        ok7, detail7 = plays(A7, a7u, news)
+        check("same URL on both tuners, nothing open: A plays its own channel", ok7, detail7)
+    finally:
+        TUNER2_M3U.write_text(original)
+        n.run_task(admin, "RefreshGuide")
+        wait_for(lambda: tags_match(admin, aid, n.expected_channels()))
 
     print("== 10. logging")
     time.sleep(1)

@@ -156,13 +156,25 @@ public class AccessService
     /// <param name="value">The identifier.</param>
     /// <returns>The classification.</returns>
     public TargetInfo Classify(AccessSnapshot snapshot, Filters.CollectedValue value)
+        => Classify(snapshot, value, opening: false);
+
+    /// <summary>
+    /// Classifies one identifier. With <paramref name="opening"/>, a channel's tuner is the one Jellyfin would
+    /// actually use: if a sharable stream of the same media source is already open on another tuner, Jellyfin hands
+    /// that one out (DefaultLiveTvService.cs:466-476), so that tuner is checked.
+    /// </summary>
+    /// <param name="snapshot">The snapshot this decision uses.</param>
+    /// <param name="value">The identifier.</param>
+    /// <param name="opening">Whether the request can open a stream.</param>
+    /// <returns>The classification.</returns>
+    public TargetInfo Classify(AccessSnapshot snapshot, Filters.CollectedValue value, bool opening)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(value);
 
         try
         {
-            return ClassifyCore(snapshot, value);
+            return ClassifyCore(snapshot, value, opening);
         }
 #pragma warning disable CA1031 // Any lookup failure means we can't classify: fail closed.
         catch (Exception ex)
@@ -175,7 +187,7 @@ public class AccessService
         }
     }
 
-    private TargetInfo ClassifyCore(AccessSnapshot snapshot, Filters.CollectedValue value)
+    private TargetInfo ClassifyCore(AccessSnapshot snapshot, Filters.CollectedValue value, bool opening)
     {
         // A play session id makes streaming reuse that session's transcoding job and its media source
         // (Jellyfin.Api/Helpers/StreamingHelpers.cs:117-125). If the job is on a live stream, check that stream.
@@ -208,7 +220,13 @@ public class AccessService
             var item = _libraryManager.GetItemById(guid);
             if (item is LiveTvChannel or LiveTvProgram)
             {
-                return new TargetInfo(TargetKind.LiveTv, GetItemTuner(snapshot, guid, out _), value.IsRouteIdentifier);
+                var channel = item as LiveTvChannel
+                    ?? (((LiveTvProgram)item).ChannelId == Guid.Empty ? null : _libraryManager.GetItemById(((LiveTvProgram)item).ChannelId) as LiveTvChannel);
+                var tuner = GetItemTuner(snapshot, guid, out _);
+                return new TargetInfo(
+                    TargetKind.LiveTv,
+                    opening && channel is not null ? EffectiveTuner(snapshot, channel, tuner, JellyfinIds.M3uMediaSourceId(channel.ExternalId)) : tuner,
+                    value.IsRouteIdentifier);
             }
 
             if (item is not null)
@@ -224,10 +242,29 @@ public class AccessService
         switch (ProviderString.Classify(value.Text, out var tokenItemId))
         {
             case ProviderStringKind.LiveTvOpenToken:
-                // A Live TV open token must name a channel we can place on a tuner. (Jellyfin throws on an empty id.)
-                return tokenItemId != Guid.Empty && _libraryManager.GetItemById(tokenItemId) is LiveTvChannel
-                    ? new TargetInfo(TargetKind.LiveTv, GetItemTuner(snapshot, tokenItemId, out _), true)
-                    : new TargetInfo(TargetKind.Unresolved, null, true);
+            {
+                // A Live TV open token must name a channel we can place on a tuner (Jellyfin throws on an empty id),
+                // and its media source part may only be that channel's own: Jellyfin shares any open stream whose
+                // id matches it, whatever channel or tuner it is on (DefaultLiveTvService.cs:466-476).
+                if (tokenItemId == Guid.Empty
+                    || _libraryManager.GetItemById(tokenItemId) is not LiveTvChannel tokenChannel
+                    || !ProviderString.TrySplitLiveTvOpenToken(value.Text, out var channelText, out var sourceId))
+                {
+                    return new TargetInfo(TargetKind.Unresolved, null, true);
+                }
+
+                var channelSource = JellyfinIds.M3uMediaSourceId(tokenChannel.ExternalId);
+                if (!JellyfinIds.IsAllowedOpenTokenSource(sourceId, channelText, channelSource))
+                {
+                    return new TargetInfo(TargetKind.Unresolved, null, true);
+                }
+
+                var tuner = GetItemTuner(snapshot, tokenItemId, out _);
+
+                // No media source part (or the channel id) means Jellyfin won't look for a stream to share.
+                var shares = !string.IsNullOrEmpty(sourceId) && !string.Equals(sourceId, channelText, StringComparison.OrdinalIgnoreCase);
+                return new TargetInfo(TargetKind.LiveTv, shares ? EffectiveTuner(snapshot, tokenChannel, tuner, channelSource) : tuner, true);
+            }
 
             case ProviderStringKind.LiveTvStreamId:
             case ProviderStringKind.OtherProvider:
@@ -266,6 +303,36 @@ public class AccessService
         var path = item.Path.Replace('\\', '/');
         return roots.Any(root => !string.IsNullOrWhiteSpace(root)
             && path.StartsWith(root.Replace('\\', '/').TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The tuner Jellyfin would actually use to serve this channel: an already-open, sharable stream of the same
+    /// media source is handed out instead of opening a new one, even if it is on another tuner (possible when both
+    /// playlists list the same stream URL).
+    /// </summary>
+    private string? EffectiveTuner(AccessSnapshot snapshot, LiveTvChannel channel, string? ownTuner, string? mediaSourceId)
+    {
+        if (string.IsNullOrEmpty(mediaSourceId))
+        {
+            return ownTuner;
+        }
+
+        var open = _mediaSourceManager.GetLiveStreamInfo(JellyfinIds.LiveTvStreamId(mediaSourceId));
+        if (open is null || !open.EnableStreamSharing || string.IsNullOrEmpty(open.TunerHostId))
+        {
+            return ownTuner;
+        }
+
+        var openTuner = TunerOfHost(snapshot, open.TunerHostId);
+        if (!string.Equals(openTuner, ownTuner, StringComparison.Ordinal))
+        {
+            _logger.LogInformation(
+                "LiveTvAccess: channel {Channel} would share a stream already open on tuner {Tuner}",
+                channel.Id.ToString("N"),
+                openTuner ?? "(unknown)");
+        }
+
+        return openTuner;
     }
 
     /// <summary>

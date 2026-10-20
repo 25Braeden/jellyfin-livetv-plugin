@@ -82,4 +82,13 @@ public static class LiveTvEndpoints
                 || (string.Equals(action.ControllerName, LiveTvController, StringComparison.Ordinal)
                     && action.ActionName is "GetLiveStreamFile" or "GetLiveRecordingFile"));
     }
+
+    /// <summary>
+    /// Gets whether an action can open (and so share) a Live TV stream: playback info / open, and the streaming
+    /// controllers, which open the channel's stream themselves (TranscodeManager.cs:662-669).
+    /// </summary>
+    /// <param name="action">The action, if it is a controller action.</param>
+    /// <returns><c>true</c> if it can open a stream.</returns>
+    public static bool IsOpening(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action)
+        => action?.ControllerName is "MediaInfo" or "Videos" or "Audio" or "DynamicHls" or "UniversalAudio";
 }

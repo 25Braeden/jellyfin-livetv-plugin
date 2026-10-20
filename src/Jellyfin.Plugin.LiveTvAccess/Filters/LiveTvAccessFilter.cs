@@ -71,6 +71,11 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         }
 
         var executed = await next().ConfigureAwait(false);
+        if (!AccessPolicy.IsExempt(effective) && !HideUpstreamUrls(context, executed, effective))
+        {
+            return;
+        }
+
         if (executed.Exception is not null && !executed.ExceptionHandled && IsTunerConflict(executed.Exception))
         {
             _logger.LogInformation(
@@ -119,7 +124,7 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         var resolvedTarget = false;
         foreach (var value in values)
         {
-            var target = _access.Classify(snapshot, value);
+            var target = _access.Classify(snapshot, value, LiveTvEndpoints.IsOpening(action));
             var decision = AccessPolicy.DecideTarget(caller, snapshot.Map, target, ready);
             if (decision != AccessDecision.Allow)
             {
@@ -141,6 +146,43 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Replaces a response that carries Live TV upstream URLs (media source Path / EncoderPath / headers, Live TV
+    /// config) with a scrubbed copy. If the copy can't be made the response is denied (fail closed).
+    /// </summary>
+    private bool HideUpstreamUrls(ActionExecutingContext context, ActionExecutedContext executed, Caller caller)
+    {
+        if (executed.Exception is not null || executed.Result is not ObjectResult { Value: { } value } result)
+        {
+            return true;
+        }
+
+        try
+        {
+            var scrubbed = ResponseScrubber.Scrub(value);
+            if (!ReferenceEquals(scrubbed, value))
+            {
+                executed.Result = new ObjectResult(scrubbed)
+                {
+                    StatusCode = result.StatusCode,
+                    DeclaredType = result.DeclaredType,
+                    ContentTypes = result.ContentTypes,
+                    Formatters = result.Formatters,
+                };
+            }
+
+            return true;
+        }
+#pragma warning disable CA1031 // Could not scrub: don't send the original. Fail closed.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            _logger.LogError(ex, "LiveTvAccess: could not hide upstream URLs in a response; denying it");
+            executed.Result = PlainText(StatusCodes.Status403Forbidden, AccessPolicy.DeniedMessage);
+            return false;
+        }
     }
 
     private static bool IsLegacyHls(ControllerActionDescriptor? action)
