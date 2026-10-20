@@ -859,3 +859,20 @@ before any change. The full table of findings and their statuses is at the end o
 **Tests:** Core 20 and plugin 11 failed first, including the old "play session alone is allowed" expectation, now 403.
 Gate 3 section 18 has the exact requests from both reviews, plus `tag=S` and play-session-only. All return 403 with no
 upstream request; static with A's own `liveStreamId` still returns 200.
+
+### R2. Live TV listings bound to the caller (independent review Q1)
+
+**Confirmed live.** `POST /LiveTv/Programs` builds its query from `body.UserId`, and from no user at all when it is
+empty (`LiveTvController.cs:654-658`). It doesn't use `RequestHelpers.GetUserId` (`RequestHelpers.cs:67-85`), which
+the GET listings use to fall back to the caller and forbid other users.
+- As A, `{}` returned 147 tuner-2 programmes (no blocked tags applied).
+- `{"UserId": <B>}` returned B's guide.
+
+**Fix (filter, LiveTv controller, non-exempt callers):**
+- Any `userId` argument must be empty or the caller.
+- For `GetPrograms` (`LiveTvEndpoints.UserBoundBodies`), an empty body `UserId` is set to the caller, as `GetUserId`
+  does. Another user's id gets the generic 403. A body shape without a `UserId` is refused (fails closed).
+- The self-check contract now requires `GetPrograms`' body to have `UserId`; the live server passes.
+
+**Live:** `{}` now returns A's guide with 0 tuner-2 programmes, `{UserId: B}` gets 403, and `{UserId: A}` works.
+Gate 3 section 21.

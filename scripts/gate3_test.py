@@ -864,6 +864,21 @@ def main():
     check("after the page-style save: status Healthy", wait_for(lambda: status(refresh=True)["State"] == "Healthy", 20))
     admin.post(f"/Plugins/{PLUGIN_ID}/Configuration", CONFIG)
 
+    print("== 21. final review fixes")
+    A21, a21u, _ = n.login("A", "gate3-A-final")
+    users21 = n.users_by_name(admin)
+    tuner2_ids = {c for c, (tn, _) in n.expected_channels().items() if tn == "tuner2"}
+
+    def tuner2_programmes(st, body):
+        return sum(1 for i in (body.get("Items", []) if st == 200 else []) if (i.get("ChannelId") or "").replace("-", "") in tuner2_ids)
+
+    # Q1: POST LiveTv/Programs takes the user from the body (LiveTvController.cs:656-658).
+    st, body = A21.post("/LiveTv/Programs", {"Limit": 500})
+    check("Q1: A POST /LiveTv/Programs {} = own guide only (no tuner-2 programmes)", st == 200 and tuner2_programmes(st, body) == 0 and len(body.get("Items", [])) > 0, f"HTTP {st}, tuner-2 programmes {tuner2_programmes(st, body)}")
+    check("Q1: A POST /LiveTv/Programs {UserId: B} = 403", A21.post("/LiveTv/Programs", {"UserId": users21["B"]["Id"]})[0] == 403)
+    st, body = A21.post("/LiveTv/Programs", {"UserId": a21u, "Limit": 500})
+    check("Q1: A POST /LiveTv/Programs {UserId: A} = own guide", st == 200 and tuner2_programmes(st, body) == 0 and len(body.get("Items", [])) > 0, f"HTTP {st}")
+
     print("== 10. logging")
     time.sleep(1)
     log = subprocess.run(["docker", "logs", "--since", since, "jellyfin-dev"], capture_output=True, text=True)

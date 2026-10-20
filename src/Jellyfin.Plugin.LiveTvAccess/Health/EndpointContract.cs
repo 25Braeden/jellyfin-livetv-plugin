@@ -29,7 +29,7 @@ public static class EndpointContract
         new("LiveTv", "GetLiveTvChannels", [], Returns: typeof(BaseItemDto)),
         new("LiveTv", "GetChannel", ["channelId"], Returns: typeof(BaseItemDto)),
         new("LiveTv", "GetLiveTvPrograms", [], Returns: typeof(BaseItemDto)),
-        new("LiveTv", "GetPrograms", [], Returns: typeof(BaseItemDto)),
+        new("LiveTv", "GetPrograms", [], ["UserId"], typeof(BaseItemDto)),
         new("LiveTv", "GetRecommendedPrograms", [], Returns: typeof(BaseItemDto)),
         new("LiveTv", "GetProgram", ["programId"], Returns: typeof(BaseItemDto)),
         new("LiveTv", "GetGuideInfo", []),

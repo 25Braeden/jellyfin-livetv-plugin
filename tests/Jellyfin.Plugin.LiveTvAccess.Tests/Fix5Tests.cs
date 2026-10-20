@@ -71,9 +71,10 @@ public class Fix5Tests
         Assert.Equal(403, (await w.RunAt(a, Args(("channelId", w.Tuner2Channel.Id)), LiveTv, "GetChannel", "GET", null, "channelId")).Status);
         Assert.Null((await w.RunAt(a, Args(("programId", w.Tuner1Program.Id.ToString("N"))), LiveTv, "GetProgram", "GET", null, "programId")).Status);
         Assert.Equal(403, (await w.RunAt(a, Args(("programId", w.Tuner2Program.Id.ToString("N"))), LiveTv, "GetProgram", "GET", null, "programId")).Status);
-        var body = new { ChannelIds = new[] { w.Tuner1Channel.Id } };
+        // Jellyfin's GetProgramsDto has a UserId (bound to the caller since the final review).
+        var body = new ReviewFinalUserBindingTests.ProgramsBody { ChannelIds = [w.Tuner1Channel.Id] };
         Assert.Null((await w.RunAt(a, Args(("body", body)), LiveTv, "GetPrograms")).Status);
-        Assert.Equal(403, (await w.RunAt(a, Args(("body", new { ChannelIds = new[] { w.Tuner1Channel.Id, w.Tuner2Channel.Id } })), LiveTv, "GetPrograms")).Status);
+        Assert.Equal(403, (await w.RunAt(a, Args(("body", new ReviewFinalUserBindingTests.ProgramsBody { ChannelIds = [w.Tuner1Channel.Id, w.Tuner2Channel.Id] })), LiveTv, "GetPrograms")).Status);
     }
 
     [Theory]

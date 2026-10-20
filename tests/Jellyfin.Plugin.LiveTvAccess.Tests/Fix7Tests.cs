@@ -300,6 +300,8 @@ public class Fix7Tests
 
     public sealed class FakeBody
     {
+        public Guid? UserId { get; set; }
+
         public string? OpenToken { get; set; }
 
         public string? LiveStreamId { get; set; }

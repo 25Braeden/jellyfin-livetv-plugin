@@ -34,6 +34,12 @@ public static class LiveTvEndpoints
     };
 
     /// <summary>
+    /// LiveTvController actions whose body carries the user the listing is computed for; the filter binds it to the
+    /// caller (POST LiveTv/Programs, LiveTvController.cs:654-658).
+    /// </summary>
+    public static readonly IReadOnlySet<string> UserBoundBodies = new HashSet<string>(StringComparer.Ordinal) { "GetPrograms" };
+
+    /// <summary>
     /// Actions that must name a resolvable target (Jellyfin.Api/Controllers/MediaInfoController.cs:269, :314);
     /// without one the request is denied.
     /// </summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using LiveTvAccess.Core;
@@ -144,6 +145,11 @@ public class LiveTvAccessFilter : IAsyncActionFilter
             {
                 return Deny(context, caller, endpoint, "endpoint", action.ActionName, started, 0);
             }
+
+            if (!BindUserToCaller(context, action, caller))
+            {
+                return Deny(context, caller, AccessDecision.DenyEndpoint, "user", action.ActionName, started, 0);
+            }
         }
 
         if (!TargetCollector.TryCollect(context, out var values))
@@ -191,6 +197,51 @@ public class LiveTvAccessFilter : IAsyncActionFilter
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// The user a Live TV listing is computed for must be the caller: the listing's blocked tags hide other tuners'
+    /// channels. GET listings already enforce this in Jellyfin (RequestHelpers.GetUserId, RequestHelpers.cs:67-85),
+    /// but POST LiveTv/Programs takes the body's UserId as is, and no user at all when it's empty
+    /// (LiveTvController.cs:656-658). A missing body UserId becomes the caller (as GetUserId does); another user's id,
+    /// or a body shape without a UserId, is refused.
+    /// </summary>
+    private static bool BindUserToCaller(ActionExecutingContext context, ControllerActionDescriptor action, Caller caller)
+    {
+        foreach (var (name, value) in context.ActionArguments)
+        {
+            if (string.Equals(name, "userId", StringComparison.OrdinalIgnoreCase)
+                && value is Guid userId && userId != Guid.Empty && userId != caller.UserId)
+            {
+                return false;
+            }
+        }
+
+        if (!LiveTvEndpoints.UserBoundBodies.Contains(action.ActionName))
+        {
+            return true;
+        }
+
+        var body = context.ActionArguments.Values.FirstOrDefault(v => v?.GetType().GetProperty("UserId") is not null);
+        var property = body?.GetType().GetProperty("UserId");
+        if (property is null || (property.PropertyType != typeof(Guid?) && property.PropertyType != typeof(Guid)))
+        {
+            return false;
+        }
+
+        var bodyUser = property.GetValue(body) as Guid?;
+        if (bodyUser is null || bodyUser == Guid.Empty)
+        {
+            if (!property.CanWrite)
+            {
+                return false;
+            }
+
+            property.SetValue(body, caller.UserId);
+            return true;
+        }
+
+        return bodyUser == caller.UserId;
     }
 
     /// <summary>
