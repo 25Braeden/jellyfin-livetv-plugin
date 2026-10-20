@@ -824,3 +824,38 @@ Fix (local test tooling only):
   (a check, not a crash).
 
 This doesn't affect production, where the guide comes from the real provider.
+
+## Final review (2026-10-20): independent subagent, Argon (Gemini), Sol (ChatGPT)
+
+Each external claim was checked against the plugin and the Jellyfin 10.11.11 source, and reproduced live where possible,
+before any change. The full table of findings and their statuses is at the end of this section.
+
+### R1. Static exemption only from the effective stream parameters (Sol #1, Argon #6)
+
+**Sol #1: confirmed live.**
+- **Request:** A opens Test News (live stream id `S`, A's tuner busy), then sends
+  `GET /Videos/{Test Sports}/stream?static=true&deviceId=S`. It returned **200 with video**, and the provider got a
+  Test Sports request: an untracked second stream.
+- **Cause:** the filter set `tracked` when any argument named an open live stream on the caller's tuner. Jellyfin only
+  uses the effective `LiveStreamId` (`StreamingHelpers.cs:116, 141-143`); `deviceId` was irrelevant to it.
+
+**Argon #6: not reproducible as a bypass.**
+- Jellyfin's `params` field 3 is `Static = string.Equals("true", val, OrdinalIgnoreCase)` (`StreamingHelpers.cs:417-418`):
+  no trim, no `bool.TryParse`.
+- So `params=;;; true ` is not static. The request takes the tracked transcode path, and it returned 409 (tuner busy)
+  live.
+- Fixed together with Sol #1 anyway (failing closed), as decided.
+
+**Fix (`StaticStreamRequest`, Core; `LiveTvEndpoints.IsStaticStream` / `EffectiveLiveStreamId`):**
+- Static: a non-blank `params` field 3 overrides the bound `static` argument, as in Jellyfin's ParseParams
+  (`StreamingHelpers.cs:62, 389-418`). Any non-blank value other than `false` counts as static: a superset of
+  Jellyfin's "true".
+- Tracked: only the effective live stream (`params` field 22 if non-blank, else `liveStreamId`) can make a static
+  request tracked, and it must be an open stream. Its tuner is checked with every other identifier.
+- **A play session alone no longer counts.** With no `LiveStreamId`, Jellyfin streams the job's media source
+  statically (`StreamingHelpers.cs:116-125`) without opening a counted stream.
+- UniversalAudio takes no live stream id, so it is always denied for Live TV items.
+
+**Tests:** Core 20 and plugin 11 failed first, including the old "play session alone is allowed" expectation, now 403.
+Gate 3 section 18 has the exact requests from both reviews, plus `tag=S` and play-session-only. All return 403 with no
+upstream request; static with A's own `liveStreamId` still returns 200.

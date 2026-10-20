@@ -733,6 +733,12 @@ def main():
             ("Videos stream, legacy params field 3 = true", f"/Videos/{sports}/stream?params={urllib.parse.quote(params3)}"),
             ("Audio stream?static=true", f"/Audio/{sports}/stream?static=true"),
             ("UniversalAudio", f"/Audio/{sports}/universal?userId={a8u}"),
+            # Final review, Sol #1: an unrelated argument carrying A's own open stream id must not vouch for it.
+            ("static=true&deviceId=<A's open stream id> (Sol #1)", f"/Videos/{sports}/stream?static=true&deviceId={ms8['LiveStreamId']}"),
+            ("static=true&tag=<A's open stream id>", f"/Videos/{sports}/stream?static=true&tag={ms8['LiveStreamId']}"),
+            # Final review, Argon #6: params field 3 with whitespace (static is parsed failing closed).
+            ("params=;;;%20true%20 (Argon #6)", f"/Videos/{sports}/stream?params=" + urllib.parse.quote(";;; true ")),
+            ("static=true + play session only (no liveStreamId)", f"/Videos/{news}/stream?static=true&playSessionId={ps8}"),
         ):
             st, body = first_bytes(A8, path)
             check(f"A, tuner busy, {label} of Test Sports = 403 + generic message", st == 403 and body.decode(errors="replace") == DENIED, f"HTTP {st}")

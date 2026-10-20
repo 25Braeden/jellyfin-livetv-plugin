@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using LiveTvAccess.Core;
 
 namespace Jellyfin.Plugin.LiveTvAccess.Filters;
 
@@ -102,7 +104,7 @@ public static class LiveTvEndpoints
 
     /// <summary>
     /// Gets whether a request is, or may be served as, a static (direct) stream. Videos / Audio stream actions take
-    /// <c>static</c>, also settable through field 3 of the legacy <c>params</c> string (StreamingHelpers.cs:405-421);
+    /// <c>static</c>, overridden by field 3 of the legacy <c>params</c> string (<see cref="StaticStreamRequest"/>);
     /// UniversalAudio decides itself and may stream statically or redirect (UniversalAudioController.cs:176-182).
     /// </summary>
     /// <param name="action">The action, if it is a controller action.</param>
@@ -111,33 +113,29 @@ public static class LiveTvEndpoints
     public static bool IsStaticStream(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action, IDictionary<string, object?> arguments)
     {
         ArgumentNullException.ThrowIfNull(arguments);
-        if (action?.ControllerName is "UniversalAudio")
+        return action?.ControllerName switch
         {
-            return true;
-        }
-
-        if (action?.ControllerName is not ("Videos" or "Audio"))
-        {
-            return false;
-        }
-
-        foreach (var (name, value) in arguments)
-        {
-            if (string.Equals(name, "static", StringComparison.OrdinalIgnoreCase) && value is true)
-            {
-                return true;
-            }
-
-            if (string.Equals(name, "params", StringComparison.OrdinalIgnoreCase) && value is string legacy)
-            {
-                var fields = legacy.Split(';');
-                if (fields.Length > 3 && string.Equals(fields[3], "true", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+            "UniversalAudio" => true,
+            "Videos" or "Audio" => StaticStreamRequest.IsStatic(Argument(arguments, "static") as bool?, Argument(arguments, "params") as string),
+            _ => false,
+        };
     }
+
+    /// <summary>
+    /// Gets the live stream a Videos / Audio stream request actually uses: <c>liveStreamId</c>, overridden by field 22
+    /// of the legacy <c>params</c> string. No other argument counts. UniversalAudio takes no live stream id.
+    /// </summary>
+    /// <param name="action">The action, if it is a controller action.</param>
+    /// <param name="arguments">The action arguments.</param>
+    /// <returns>The effective live stream id, or <c>null</c>.</returns>
+    public static string? EffectiveLiveStreamId(Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor? action, IDictionary<string, object?> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        return action?.ControllerName is "Videos" or "Audio"
+            ? StaticStreamRequest.EffectiveLiveStreamId(Argument(arguments, "liveStreamId") as string, Argument(arguments, "params") as string)
+            : null;
+    }
+
+    private static object? Argument(IDictionary<string, object?> arguments, string name)
+        => arguments.FirstOrDefault(a => string.Equals(a.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
 }

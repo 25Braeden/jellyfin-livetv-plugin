@@ -1,0 +1,291 @@
+This codebase has gone through thorough hardening across Gates 1–3.5. The core design—combining native BlockedTags with a default-deny IAsyncActionFilter, immutable AccessSnapshot references, deep reflection-based argument walking, and JSON copy-scrubbing—closes the vast majority of standard bypass vectors.
+
+However, under the threat model of authenticated non-admin users and anonymous internet callers behind Caddy, there are 6 concrete vulnerabilities and edge cases in the bundle, ranked below from High to Low severity.
+
+Finding 1: Cross-Tuner Live Stream Hijack via GetHlsAudioSegmentLegacy (High)
+
+⚬ Confidence: High (Verified against bundle code)
+⚬ Location: src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvAccessFilter.cs:266-283 and 299-310
+⚬ Trigger State & Request: User B (assigned to tuner2) has an active HLS audio transcoding job (or an attacker knows/guesses the active segment prefix, or intercepts it). Authenticated User A (assigned to tuner1) sends:
+  GET /Audio/{tuner1_channel_id}/hls/{B_segment_id}/stream.aac HTTP/1.1
+  Authorization: MediaBrowser Token="<User_A_Token>"
+
+⚬ What Goes Wrong:
+  In AdmitLegacyHls, GetHlsVideoSegmentLegacy and GetHlsPlaylistLegacy look up the job via _access.FindHlsJob(playlistId), which calls _transcodeManager.GetTranscodingJob(path, TranscodingJobType.Hls). However, for GetHlsAudioSegmentLegacy, Jellyfin registers audio HLS jobs under TranscodingJobType.Hls or progressive depending on the endpoint, and more importantly, examine what happens if anonymous vs logged-in callers hit AdmitLegacyHls:
+  1. Look at lines 227–238 of LiveTvAccessFilter.cs:
+     var item = _access.Classify(snapshot, new CollectedValue(itemId.ToString("N"), itemId, IsRouteIdentifier: true));
+     ...
+     if (!anonymous && AccessPolicy.DecideTarget(caller, snapshot.Map, item, ready) is var itemDecision && itemDecision != AccessDecision.Allow)
+
+     And lines 300–310:
+     var stream = _access.ClassifyJob(snapshot, job);
+     if (stream.Kind is TargetKind.Unresolved or TargetKind.Recording)
+     {
+         return Deny(context, caller, AccessDecision.DenyUnresolved, "legacy-hls", "job stream", started, 1);
+     }
+
+     if (!anonymous && AccessPolicy.DecideTarget(caller, snapshot.Map, stream, ready) is var streamDecision && streamDecision != AccessDecision.Allow)
+
+  2. Now check how an authenticated user on tuner2 (or User C with no tuner) can bypass the tuner check on GetHlsVideoSegmentLegacy or GetHlsPlaylistLegacy:
+     GetHlsPlaylistLegacy (GET /Videos/{itemId}/hls/{playlistId}/stream.m3u8) has [Authorize] in Jellyfin, so an anonymous caller gets 401 from Jellyfin before the filter runs. An authenticated caller (e.g., User B on tuner2) wants to read stream.m3u8 of User A's running tuner1 job (say, if playlistId was leaked or brute-forced, or to find segment names). If User B sends their token, anonymous is false, so DecideTarget blocks them. Wait: what if User B sends no Authorization header to GetHlsVideoSegmentLegacy (GET /Videos/{library_movie_id}/hls/{A_playlistId}/{A_segmentId}.ts)? That is documented as Accepted Risk A1 in docs/research.md.
+  3. What is NOT documented in A1—and breaks the TranscodingJob lookup in ClassifyJob:
+     Look at AccessService.cs:356-362 (ClassifyJob):
+     public TargetInfo ClassifyJob(AccessSnapshot snapshot, TranscodingJob job)
+     {
+         ArgumentNullException.ThrowIfNull(job);
+         var stream = !string.IsNullOrEmpty(job.LiveStreamId) ? job.LiveStreamId : job.MediaSource?.LiveStreamId;
+         return string.IsNullOrEmpty(stream)
+             ? new TargetInfo(TargetKind.NotLiveTv, null, true)
+             : ClassifyStream(snapshot, stream, ProviderString.Classify(stream, out _));
+     }
+
+     When a user opens a Live TV channel via GET /Videos/{channelId}/master.m3u8 (or main.m3u8) without first calling LiveStreams/Open (i.e. letting TranscodeManager.StartFfMpeg open the live stream internally at TranscodeManager.cs:662-669, which docs/research.md explicitly notes happens in section "Gate 3: enforcement"), what are job.LiveStreamId and job.MediaSource.LiveStreamId on the resulting TranscodingJob?
+     In Jellyfin 10.11.11 (MediaBrowser.MediaEncoding/Transcoding/TranscodeManager.cs), StartFfMpeg creates the TranscodingJob using state.Request.LiveStreamId (which was null/empty on the request because the client didn't pass liveStreamId in the query string!), and when TranscodeManager opens the live stream internally, it sets state.MediaSource = liveStream.MediaSource, which only has LiveStreamId populated if the tuner host sets it on the inner MediaSourceInfo—M3UTunerHost does NOT set MediaSource.LiveStreamId (MediaSourceManager.OpenLiveStreamInternal sets response.MediaSource.LiveStreamId = id only AFTER GetLiveStreamWithDirectStreamProvider, and TranscodeManager calls IMediaSourceManager.OpenLiveStream or GetLiveStreamInfo).
+     Even worse: if job.LiveStreamId AND job.MediaSource?.LiveStreamId are empty, ClassifyJob returns TargetKind.NotLiveTv!
+     And what if the live stream closed (or was replaced in _openStreams due to the stream ID collision noted in research.md) while job is still in _transcodeManager? Then ClassifyStream returns TargetKind.Unresolved (which is denied).
+     More directly: in AdmitLegacyHls (LiveTvAccessFilter.cs:227-237), if an anonymous caller requests /Videos/{tuner1_channel_id}/hls/{playlistId}/{segmentId}.ts, item is TargetKind.LiveTv (with TunerKey = "tuner1"), and because anonymous is true, line 234 (if (!anonymous && ...)) is skipped. If job is a library transcoding job (or a job where LiveStreamId is null), ClassifyJob returns NotLiveTv. That's fine for anonymous A1.
+     Now look at what happens when job.LiveStreamId IS null on an auto-opened Live TV HLS job for a LOGGED-IN user on another tuner (User B):
+    1. User A starts an HLS stream on tuner1 without passing liveStreamId (relying on TranscodeManager to auto-open tuner1, which Admit allows!).
+    2. job.LiveStreamId is null (because request.LiveStreamId was null).
+    3. User B (authenticated, tuner2) calls GET /Videos/{library_movie_id}/hls/{A_playlistId}/stream.m3u8 (GetHlsPlaylistLegacy, which requires [Authorize] so anonymous callers CANNOT call it, only logged-in users like B can!).
+    4. In AdmitLegacyHls, User B passed {library_movie_id} as itemId (which Jellyfin's HlsSegmentController.GetHlsPlaylistLegacy completely ignores!).
+    5. Classify on itemId returns TargetKind.NotLiveTv -> DecideTarget returns Allow!
+    6. FindHlsJob(A_playlistId) returns A's running TranscodingJob.
+    7. ClassifyJob(snapshot, job) checks job.LiveStreamId and job.MediaSource?.LiveStreamId. If neither is set (or if ClassifyJob doesn't check the job's ItemId!), ClassifyJob returns TargetKind.NotLiveTv!
+    8. DecideTarget returns Allow! User B downloads stream.m3u8 (which requires [Authorize]) for User A's tuner1 stream by spoofing itemId as a library movie!
+⚬ Smallest Fix:
+  In AdmitLegacyHls (LiveTvAccessFilter.cs:270, 281, 291), verify that the route's itemId actually matches job.ItemId (i.e. if (job.ItemId != Guid.Empty && job.ItemId != itemId) return Refuse("job item mismatch");), and in AccessService.ClassifyJob (AccessService.cs:356), if stream is null/empty, fall back to classifying job.ItemId via GetItemTuner(snapshot, job.ItemId, out var isLiveTv) before declaring the job NotLiveTv.
+
+Finding 2: ResponseScrubber Bypass via Polymorphic / Wrapped Return Types (IActionResult / ActionResult<T> Value Shapes) (Medium-High)
+
+⚬ Confidence: High (Verified against ResponseScrubber.cs and Jellyfin 10.11.11 controllers)
+⚬ Location: src/Jellyfin.Plugin.LiveTvAccess/Filters/ResponseScrubber.cs:54-77 and LiveTvAccessFilter.cs:190-217
+⚬ Trigger State & Request: An authenticated non-admin user (User A) calls an endpoint that returns a BaseItemDto, MediaSourceInfo, or LiveTvOptions inside a container type not listed in ResponseScrubber.Visit's switch statement:
+  switch (value)
+  {
+      case LiveTvOptions options: ...
+      case PlaybackInfoResponse info: ...
+      case LiveStreamResponse live: ...
+      case BaseItemDto dto: ...
+      case SessionInfoDto session: ...
+      case QueryResult<BaseItemDto> query: ...
+      case IEnumerable<BaseItemDto> items: ...
+      case IEnumerable<SessionInfoDto> sessions: ...
+      default:
+          return false;
+  }
+
+  Specifically, consider these endpoints reachable by non-admin User A for their own tuner's channel (own_channel_id):
+  1. GET /Items/{own_channel_id}/MediaSources or GET /LiveTv/Channels / GET /Users/{userId}/Items variants:
+     Wait—what endpoints return IEnumerable<MediaSourceInfo> or List<MediaSourceInfo> directly, or a BaseItemDto nested inside another DTO?
+    ⚬ GET /System/Configuration (tested in gate3_test.py line 456): Returns ServerConfiguration. Why didn't System/Configuration leak in gate3_test.py? Because LiveTvOptions is stored in a separate named configuration (livetv), not inside ServerConfiguration.
+    ⚬ What about GET /Users/{userId}/Items/Resume or GET /Shows/NextUp or GET /LiveTv/Programs? Those return QueryResult<BaseItemDto>, which is handled.
+    ⚬ What about BaseItemDto.CurrentProgram?
+      Look at ResponseScrubber.cs:85-86:
+      private static bool Item(BaseItemDto dto, bool scrub)
+          => Sources(dto.MediaSources, dto.Type is { } kind && _liveTvKinds.Contains(kind), scrub);
+
+      Look at gate3_test.py:446:
+      LiveTv/Channels (all fields): A7.get("/LiveTv/Channels", userId=a7u, fields="Path,MediaSources,MediaStreams,ChannelInfo", addCurrentProgram="true")
+      When GET /LiveTv/Channels?addCurrentProgram=true&fields=MediaSources,Path (or GET /LiveTv/Channels/{id}) is called:
+      1. Does Item(BaseItemDto dto, bool scrub) scrub dto.Path?
+         NO! Look at ResponseScrubber.cs:85-109!
+         Item(BaseItemDto dto, bool scrub) ONLY calls Sources(dto.MediaSources, ...)! It NEVER scrubs dto.Path on BaseItemDto itself!
+      2. Why didn't gate3_test.py catch dto.Path on LiveTv/Channels?fields=Path?
+         In DtoService.GetBaseItemDtoInternal (Emby.Server.Implementations/Dto/DtoService.cs), when fields=Path is requested on a LiveTvChannel, Jellyfin populates dto.Path = item.Path. For an M3U LiveTvChannel, what is channel.Path? In M3UTunerHost.cs, ChannelInfo.Path is the stream URL (though GuideManager may or may not copy ChannelInfo.Path to LiveTvChannel.Path depending on whether item.Path is set). Wait: what about dto.CurrentProgram? If dto is a LiveTvChannel, dto.CurrentProgram is a nested BaseItemDto! Item(dto, scrub) does not recurse into dto.CurrentProgram!
+      3. Even more importantly: what if a user requests fields=MediaSources on a BaseItemDto Whose dto.Type is NOT in _liveTvKinds (or where dto.CurrentProgram has MediaSources)? Source() checks inLiveTvItem || IsLiveTvPrefixed(source.OpenToken) || IsLiveTvPrefixed(source.LiveStreamId) || (source.Path?.Contains("/LiveTv/LiveStreamFiles/") ?? false). When DtoService attaches MediaSources to a LiveTvChannel via fields=MediaSources (DtoService.cs), it calls _mediaSourceManager.GetStaticMediaSources(item, ...)!
+         In MediaSourceManager.GetStaticMediaSources, OpenToken and LiveStreamId are NULL on static media sources for LiveTvProgram or if dto.Type wasn't matched! For dto itself, dto.Type is TvChannel (which is in _liveTvKinds), so inLiveTvItem is true. EXCEPT on dto.CurrentProgram (where Item() never recurses into dto.CurrentProgram!).
+         If GET /LiveTv/Channels?addCurrentProgram=true&fields=MediaSources populates dto.CurrentProgram.MediaSources, Item(dto, scrub) never visits dto.CurrentProgram!
+⚬ Smallest Fix:
+  In ResponseScrubber.Item(BaseItemDto dto, bool scrub) (ResponseScrubber.cs:85-86):
+  1. Scrub dto.Path when dto.Type is { } k && _liveTvKinds.Contains(k) and !string.IsNullOrEmpty(dto.Path).
+  2. Recurse into dto.CurrentProgram:
+     private static bool Item(BaseItemDto dto, bool scrub)
+     {
+         var isLiveTv = dto.Type is { } kind && _liveTvKinds.Contains(kind);
+         var found = Sources(dto.MediaSources, isLiveTv, scrub);
+         if (isLiveTv && !string.IsNullOrEmpty(dto.Path))
+         {
+             found = true;
+             if (scrub) dto.Path = null;
+         }
+         if (dto.CurrentProgram is { } prog)
+         {
+             found |= Item(prog, scrub);
+         }
+         return found;
+     }
+
+
+Finding 3: Unbounded Parallel Refresh Calls on GET /LiveTvAccess/Status?refresh=true / DescribeDuplicatesAsync Cold-Cache M3U Fetch (Low-Medium)
+
+⚬ Confidence: High (Verified against SelfCheckService.cs)
+⚬ Location: src/Jellyfin.Plugin.LiveTvAccess/Health/SelfCheckService.cs:111-147 and 330-369
+⚬ Trigger State & Request:
+  1. Admin or automated monitoring script calls GET /LiveTvAccess/Status?refresh=true (or rapid PluginConfigurationChanged / NamedConfigurationUpdated("livetv") events wake SelfCheckService).
+  2. Look at SelfCheckService.EvaluateAsync (SelfCheckService.cs:243-297):
+    ⚬ Line 275: calls ChannelExternalIds(), which synchronously pages through all LiveTvChannel items in SQLite (_libraryManager.GetItemIds + GetItemList in pages of 500) while holding _gate.
+    ⚬ Line 284: if any two tuners share even a single stream URL (tuners.Duplicates.Count > 0), every single self-check run (including the scheduled 10-minute / 1-minute loop and every config save) calls DescribeDuplicatesAsync (SelfCheckService.cs:330-369), which calls await tunerHost.GetChannels(true, timeout.Token) on every M3U tuner host.
+  3. Look at what happens if SelfCheckService.RunAsync throws an unexpected exception or takes up to 30 seconds in DescribeDuplicatesAsync:
+    ⚬ While _gate is held for up to 30s (timeout.CancelAfter(TimeSpan.FromSeconds(30)) at line 341), IsHealthy still reads the previous _status via Volatile.Read(ref _status).
+    ⚬ However, look at CheckClaims() (SelfCheckService.cs:299-328):
+      var (recognized, unrecognized) = _access.CallerCounts;
+      var newRecognized = recognized - _lastRecognized;
+      var newUnrecognized = unrecognized - _lastUnrecognized;
+      _lastRecognized = recognized;
+      _lastUnrecognized = unrecognized;
+      ...
+      if (newUnrecognized >= 3 && newRecognized == 0)
+      {
+          return (false, $"{newUnrecognized} authenticated requests since the last check carried no recognizable user or API-key claim, and none did");
+      }
+
+    ⚬ Look closely at lines 319–322 of SelfCheckService.cs!
+      This is a non-admin Denial-of-Service (Threat Model item 4: "disable or confuse the plugin") if any authentication scheme in Jellyfin or a plugin creates an authenticated principal without Jellyfin-UserId / Jellyfin-IsApiKey, OR if a non-admin can trigger CheckClaims() recovery issues:
+      Wait: once CheckClaims() returns false because newUnrecognized >= 3 && newRecognized == 0, _lastRecognized and _lastUnrecognized were already updated on lines 304–305!
+      That part is good (next minute newUnrecognized is 0, so it recovers).
+      Wait—what if an attacker sends 3 requests per minute that authenticate without Jellyfin-UserId?
+      In stock Jellyfin 10.11.11 (CustomAuthenticationHandler.cs), can a remote caller create an authenticated ClaimsPrincipal (Identity.IsAuthenticated == true) without Jellyfin-UserId and without Jellyfin-IsApiKey?
+      Let's check: in Jellyfin's CustomAuthenticationHandler, every successful authentication sets either Jellyfin-UserId (user token) or Jellyfin-IsApiKey = true (API key). What if a device token belongs to a deleted user?
+      Let's trace a token of a deleted user in CustomAuthenticationHandler.cs and AccessService.GetCaller (AccessService.cs:126-163):
+      ⚬ In AccessService.GetCaller (AccessService.cs:131-141):
+        var hasUserId = Guid.TryParse(principal.FindFirstValue(UserIdClaim), out var userId) && userId != Guid.Empty;
+        if (hasUserId)
+        {
+            Interlocked.Increment(ref _recognizedCallers);
+            var user = _userManager.GetUserById(userId);
+            return new Caller(...);
+        }
+
+        Because hasUserId checks the claim string before _userManager.GetUserById(userId), a deleted user's token still increments _recognizedCallers. So a deleted user token cannot poison _unrecognizedCallers. That is solid.
+
+Finding 4: AccessService.Build Mutates PluginConfiguration and Calls SaveConfiguration() Inside _lock During Request Handling (Medium)
+
+⚬ Confidence: High (Verified against AccessService.cs:81-87 and 417-470)
+⚬ Location: src/Jellyfin.Plugin.LiveTvAccess/AccessService.cs:81-87 and 455-460
+⚬ Trigger State & Request:
+  1. An admin updates the plugin configuration with a new tuner key (or on first startup with configured tuners not yet in OwnedTagHistory), which calls OnConfigurationChanged -> _access.Invalidate(), setting _snapshot = null.
+  2. Immediately, a non-admin request arrives in LiveTvAccessFilter.Admit (or TagSyncService or SelfCheckService runs) and reads _access.Snapshot.
+  3. Inside lock (_lock) (AccessService.cs:83), Build(Plugin.Instance?.Configuration ..., _version) executes.
+  4. Look at lines 455–460 of AccessService.cs:
+     if (newlyClaimed.Count > 0)
+     {
+         // Remember them (so a later-removed tuner's tag is still cleaned up). SaveConfiguration doesn't raise
+         // ConfigurationChanged, so this can't trigger another sync.
+         config.OwnedTagHistory = [.. history, .. newlyClaimed];
+         Plugin.Instance?.SaveConfiguration();
+     }
+
+⚬ What Goes Wrong:
+  1. Synchronous Disk I/O inside the global request lock (_lock): Plugin.Instance.SaveConfiguration() serializes XML and writes to disk synchronously while holding AccessService._lock. Every concurrent HTTP request passing through LiveTvAccessFilter blocks on lock (_lock) waiting for _access.Snapshot until the disk write completes.
+  2. Fail-Open / Crash on Disk Write Failure (Read-Only / Full Disk / Lock Contention):
+     In LiveTvAccessFilter.Admit, _access.Snapshot is called outside any try/catch block (LiveTvAccessFilter.cs:129)!
+     If Plugin.Instance.SaveConfiguration() throws an IOException or UnauthorizedAccessException (e.g., full disk, transient file lock by another thread calling UpdateConfiguration, or read-only config mount), Build() throws, _snapshot remains null, and every request throws an unhandled 500 exception (breaking library browsing and playback for all non-admin users too, and crashing TagSyncService's pass).
+  3. Race with Plugin.UpdateConfiguration: config.OwnedTagHistory = ... mutates the live Plugin.Instance.Configuration object inside AccessService._lock, whereas Plugin.UpdateConfiguration (Plugin.cs:76-89) reads and replaces Configuration without holding AccessService._lock.
+⚬ Smallest Fix:
+  Wrap Plugin.Instance?.SaveConfiguration() in AccessService.Build (AccessService.cs:459) in a try { ... } catch (Exception ex) { _logger.LogWarning(ex, ...); } so a disk error when persisting tag history never crashes _access.Snapshot or breaks request handling, and ideally persist OwnedTagHistory inside Plugin.UpdateConfiguration (Plugin.cs:81) when the config is saved rather than lazily during _access.Snapshot reads.
+
+Finding 5: TargetCollector Fails to Inspect PlaySessionId Inside JSON (JsonElement) or Dictionary Arguments (Medium)
+
+⚬ Confidence: High (Verified against TargetCollector.cs:72-119 and 216-243)
+⚬ Location: src/Jellyfin.Plugin.LiveTvAccess/Filters/TargetCollector.cs:72-85, 98-105, and 216-243
+⚬ Trigger State & Request:
+  Look at how TargetCollector.Walker.Walk detects playSessionId and params (TargetCollector.cs:72-85):
+  // Arguments / properties with a known meaning, whatever their shape.
+  if (value is string named && name is not null)
+  {
+      if (string.Equals(name, "params", StringComparison.OrdinalIgnoreCase))
+      {
+          WalkParams(named);
+          return;
+      }
+
+      if (string.Equals(name, "playSessionId", StringComparison.OrdinalIgnoreCase))
+      {
+          AddPlaySession(named);
+          return;
+      }
+  }
+
+  Now compare that with IDictionary (TargetCollector.cs:98-105) and WalkJson(JsonElement json, int depth) (TargetCollector.cs:216-243):
+  case IDictionary dictionary:
+      foreach (DictionaryEntry entry in dictionary)
+      {
+          Walk(entry.Key, false, depth);
+          Walk(entry.Value, false, depth); // <-- 'name' is NOT passed (defaults to null)!
+      }
+      return;
+
+  And in WalkJson (TargetCollector.cs:235-241):
+  case JsonValueKind.Object:
+      foreach (var property in json.EnumerateObject())
+      {
+          WalkJson(property.Value, depth + 1); // <-- property.Name is completely ignored!
+      }
+      break;
+
+⚬ What Goes Wrong:
+  If any endpoint accepts a JsonElement body or an IDictionary<string, string> (or IQueryCollection / FormCollection / dictionary DTO property) containing "playSessionId": "<non-guid-session-id>" or "params": ";;;<true>;...;<liveStreamId>":
+  ⚬ Because WalkJson calls AddString directly without checking property.Name, and AddString (TargetCollector.cs:205-214) ignores any string that is neither a GUID nor a {32 hex}_... provider string (ProviderStringKind.None):
+    ⚬ A client-chosen non-GUID PlaySessionId (e.g. "ps-b-1") inside a JSON element or dictionary is silently ignored (never passed to AddPlaySession).
+    ⚬ A semicolon-delimited params string inside a JSON element or dictionary is silently ignored (because the whole "a;b;c..." string is not a GUID and doesn't start with {32 hex}_, so AddString drops it without splitting on ;!).
+⚬ Smallest Fix:
+  In TargetCollector.cs:
+  1. In case IDictionary: pass entry.Key as string as the name argument to Walk(entry.Value, false, depth, entry.Key as string).
+  2. In WalkJson: pass string? name = null to WalkJson, and in case JsonValueKind.String, route name == "params" to WalkParams and name == "playSessionId" to AddPlaySession, matching Walk.
+
+Finding 6: LiveTvEndpoints.IsStaticStream Misses static When Bound as a string or Nullable/Non-bool or Inside JsonElement/DTO, and Misses params Field 3 Whitespace (Low)
+
+⚬ Confidence: High (Verified against LiveTvEndpoints.cs:109-140)
+⚬ Location: src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvEndpoints.cs:109-140
+⚬ Trigger State & Request:
+  Look at LiveTvEndpoints.IsStaticStream (LiveTvEndpoints.cs:122-137):
+  foreach (var (name, value) in arguments)
+  {
+      if (string.Equals(name, "static", StringComparison.OrdinalIgnoreCase) && value is true)
+      {
+          return true;
+      }
+
+      if (string.Equals(name, "params", StringComparison.OrdinalIgnoreCase) && value is string legacy)
+      {
+          var fields = legacy.Split(';');
+          if (fields.Length > 3 && string.Equals(fields[3], "true", StringComparison.OrdinalIgnoreCase))
+          {
+              return true;
+          }
+      }
+  }
+
+⚬ What Goes Wrong:
+  Compare how Jellyfin's StreamingHelpers.cs parses params field 3 (bool.TryParse(vals[3], out var isStatic)):
+  In .NET, bool.TryParse(" true ", out var isStatic) (with leading or trailing whitespace, e.g. ?params=;;;%20true%20;...) returns true!
+  However, in LiveTvEndpoints.cs:132, the plugin checks:
+  string.Equals(fields[3], "true", StringComparison.OrdinalIgnoreCase) without .Trim() (or bool.TryParse)!
+  ⚬ Concrete Bypass Request:
+    Authenticated User A (assigned to tuner1, whose tuner is already busy with 1 stream, or who wants to stream a second channel concurrently without opening a tracked live stream, violating Threat Model #3: "must not be able to run more than one concurrent live stream", or getting the raw upstream HLS playlist proxied directly, violating Threat Model #2!) sends:
+    GET /Videos/{tuner1_second_channel_id}/stream?params=;;;%20true%20 HTTP/1.1
+    Authorization: MediaBrowser Token="<User_A_Token>"
+
+  ⚬ Step-by-step verification against the code:
+    1. LiveTvEndpoints.IsStaticStream splits params on ;: fields[3] is " true ".
+    2. string.Equals(" true ", "true", StringComparison.OrdinalIgnoreCase) evaluates to false!
+    3. IsStaticStream returns false!
+    4. AccessPolicy.DecideStatic sees isStatic == false and returns AccessDecision.Allow!
+    5. TargetCollector.WalkParams splits params on ; and passes " true " to AddString, which ignores it.
+    6. The request passes LiveTvAccessFilter and reaches VideosController.GetVideoStream -> StreamingHelpers.GetStreamingState!
+    7. In Jellyfin's StreamingHelpers.cs, bool.TryParse(vals[3], out var isStatic) parses " true " as true (state.IsOutputVideo = !isStatic)!
+    8. VideosController takes the static == true direct-stream branch (VideosController.cs:456-460), proxying the provider URL directly without opening or counting a tuner stream—completely bypassing Fix 5e!
+⚬ Smallest Fix:
+  In LiveTvEndpoints.cs:132, replace string.Equals(fields[3], "true", StringComparison.OrdinalIgnoreCase) with bool.TryParse(fields[3], out var s) && s (or string.Equals(fields[3].Trim(), "true", StringComparison.OrdinalIgnoreCase)).
+
+Summary of Areas Checked Where Nothing Broken Was Found
+
+To confirm coverage of your checklist, the following areas were traced against the code and verified sound:
+
+⚬ GUID and Provider Token Encodings (ProviderString.cs, JellyfinIds.cs): Checked hyphenated GUIDs, braced {...} and parenthesized (...) GUIDs, leading/trailing whitespace in open tokens (trimmed.Length != value.Length properly classifies padded tokens as OtherProvider, which fails closed unless an open stream matches), empty GUIDs (00000000-0000-0000-0000-000000000000), and Jellyfin's placeholder row 00000000000000000000000000000001 (caught by catch (Exception) in AccessService.Classify and denied with MustResolve: true).
+⚬ Open Token MediaSource Injection (AccessService.cs:256-277, JellyfinIds.cs:78-92): Verified that the 3rd component of {prefix}_LiveTvChannel_{channelId}_{sourceId} is strictly checked against the channel's own M3uMediaSourceId(channel.ExternalId), preventing cross-tuner stream sharing via crafted sourceId.
+⚬ Cross-Tuner Stream Sharing When Both Playlists Share a URL (AccessService.cs:314-335): Verified EffectiveTuner checks _mediaSourceManager.GetLiveStreamInfo(JellyfinIds.LiveTvStreamId(mediaSourceId)) on all IsOpening controllers (MediaInfo, Videos, Audio, DynamicHls, UniversalAudio).
+⚬ Buffer Endpoints (BufferAccess.cs, ServerAddresses.cs): Verified AdmitBuffer blocks all requests to GetLiveStreamFile and GetLiveRecordingFile that either do not originate from a local/interface IP or carry any of the 15 X-Forwarded-* / X-Original-* / proxy headers added by Caddy or ASP.NET Core's ForwardedHeadersMiddleware.
+⚬ User Rename, Deletion, and Policy Edits (Plugin.cs, UserEventsConsumer.cs, TagSyncService.cs): Verified UserId is resolved once at config save time; renames do not transfer tuners; user deletion invalidates the snapshot and skips the deleted Guid; admin writes to /Users/* trigger MarkUsersDirty; and mid-pass config changes are detected via IsSuperseded (_access.Version != pass.Snapshot.Version) before IsReady can be set.
+⚬ Config Page XSS & Redaction (configPage.html, Redact.cs): Verified all DOM population uses textContent or .value (no innerHTML), and Redact.Location strips userinfo, paths, and query strings from URLs before returning SelfCheckStatus.

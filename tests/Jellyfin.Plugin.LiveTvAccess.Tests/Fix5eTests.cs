@@ -63,9 +63,10 @@ public class Fix5eTests
         // A play session id that is really a channel id is not a tracked stream.
         Assert.Equal(403, (await Stream(w, a, "Videos", "GetVideoStream", ("itemId", w.Tuner1Channel.Id), ("static", true), ("playSessionId", w.Tuner1Channel.Id.ToString("N")))).Status);
 
-        // Static with A's own live play session (job on A's tuner).
+        // Since the final review: a play session alone doesn't make a static request tracked. Jellyfin would stream the
+        // job's media source without opening a counted stream (StreamingHelpers.cs:116-125).
         var job = w.AddJob(World.Tuner1StreamId);
-        Assert.Null((await Stream(w, a, "Videos", "GetVideoStream", ("itemId", w.Tuner1Channel.Id), ("static", true), ("playSessionId", job))).Status);
+        Assert.Equal(403, (await Stream(w, a, "Videos", "GetVideoStream", ("itemId", w.Tuner1Channel.Id), ("static", true), ("playSessionId", job))).Status);
 
         // Not static: the transcoder opens (and counts) the stream.
         Assert.Null((await Stream(w, a, "Videos", "GetVideoStream", ("itemId", w.Tuner1Channel.Id), ("static", false))).Status);

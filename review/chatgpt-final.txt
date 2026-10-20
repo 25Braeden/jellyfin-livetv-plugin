@@ -1,0 +1,78 @@
+I found **one reproduced filter-decision bypass**, plus sync, self-check and logging defects. I compiled the supplied C# in a local harness; I did **not** run Jellyfin or the acceptance script. The bundle contains test names, not their implementations.
+
+Locations below give source-file lines and corresponding bundle lines.
+
+1. **High — An unrelated argument can forge the “tracked stream” exemption.**
+   **Confidence:** High for the filter bypass; end-to-end playback remains unverified.
+
+   **Code:** `src/Jellyfin.Plugin.LiveTvAccess/Filters/LiveTvAccessFilter.cs:168–179` (bundle **1320–1331**), together with `AccessService.cs:342–344` (bundle **349–351**).
+
+   **Trigger:** A opens channel A1, obtaining its live stream ID `S`. While that stream remains open, A requests a different channel A2 on the same tuner:
+
+   ```http
+   GET /Videos/{A2}/stream?static=true&deviceId={S}
+   ```
+
+   The collector finds `S` inside `deviceId`. Classification correctly allows its tuner, but the filter then sets `tracked = true` merely because **some argument** identifies an open stream. Nothing establishes that the streaming action will actually use that stream.
+
+   **Reproduced:** The harness denied A2’s static request without `deviceId`, then admitted it with `deviceId=S`.
+
+   The documented static-proxy path would consequently allow another upstream stream without tuner accounting, potentially returning a raw HLS playlist. That downstream effect is **unverified Jellyfin behavior**. This differs from the accepted tracked-static path: the actual `liveStreamId` is absent.
+
+   **Smallest fix:** Keep inspecting every argument for forbidden targets, but derive the static exemption only from the **effective stream-selection parameters**—including legacy `params` precedence. An unrelated field must never supply authorization evidence. Add this request to Gate 3 section 18.
+
+2. **Medium — Failed user-sync work can be lost or mistaken for a successful retry.**
+   **Confidence:** High for both code defects; visibility consequences depend on Jellyfin behavior.
+
+   **Code:** `src/Jellyfin.Plugin.LiveTvAccess/TagSyncService.cs:391–393`, `233–243`, and `414–422` (bundle **3785–3787**, **3627–3637**, **3808–3816**).
+
+   There are two failure paths:
+
+   - **Lost retry:** During a channels-only pass, a user change sets `_usersDirty`. The channel loop clears that flag before calling `SyncUsersAsync`. If that call throws, the outer catch requeues users only when the pass’s original `users` flag was true. Here it was false, so user work is forgotten until another signal or the periodic pass. After startup, readiness also remains true.
+   - **Skipped persistence retry:** `SetPreference` mutates the user before `UpdateUserAsync` succeeds. Unlike channel tags, user preferences are not restored on failure. If the next pass receives the same user instance, `SequenceEqual` skips the failed write.
+
+   **Reproduced:** With a reused user object and one injected save failure, two calls to `SyncUsersAsync` produced **one save attempt**, and the retry reported zero changes.
+
+   Whether Jellyfin reuses those objects, and whether stale persisted preferences expose listings, is **unverified Jellyfin behavior**. The lost dirty flag itself follows directly from the plugin code.
+
+   **Smallest fix:** Requeue `_usersDirty` whenever an interleaved user sync fails, and restore the previous preference when its save fails. Add fault-injection tests for both paths.
+
+3. **Medium — The self-check accepts response shapes that the scrubber silently ignores.**
+   **Confidence:** High. This is a demonstrated drift-detection weakness, not a claim that unchanged 10.11.11 returns such a shape.
+
+   **Code:** `src/Jellyfin.Plugin.LiveTvAccess/Health/EndpointContract.cs:106–109,147–159` (bundle **2335–2338**, **2376–2388**); `Filters/ResponseScrubber.cs:38–44,57–79` (bundle **1748–1754**, **1767–1789**).
+
+   **Trigger state:** A playback-info action changes its response to a wrapper such as:
+
+   ```csharp
+   Envelope<PlaybackInfoResponse>
+   ```
+
+   `Mentions` recursively accepts arbitrary generic wrappers because they contain `PlaybackInfoResponse`. The scrubber recognizes only its explicit response shapes; an envelope reaches `default`, and `Scrub` returns the original object unchanged.
+
+   **Reproduced:** Replacing the synthetic playback-info return type with a generic wrapper yielded **zero missing-contract errors**. Passing that wrapper—with an upstream URL inside—to the scrubber returned the same object with the URL intact.
+
+   The endpoint-shape check therefore permits a silent credential-leak state instead of detecting that drift. No actual Jellyfin response change is asserted.
+
+   **Smallest fix:** Validate only response shapes the scrubber explicitly supports, after unwrapping known MVC/task wrappers. For sensitive actions, reject unexpected runtime response shapes instead of treating them as harmless.
+
+4. **Low — Duplicate tuner configuration writes credential-bearing URLs to logs.**
+   **Confidence:** High. No non-admin log-reading path is demonstrated.
+
+   **Code:** `src/LiveTvAccess.Core/TunerCatalog.cs:118–120` (bundle **4938–4940**).
+
+   **Trigger state:** Two entries have the same tuner key or URL, with a URL containing provider credentials:
+
+   ```text
+   http://alice:secret@provider/get.php?password=secret
+   ```
+
+   The duplicate warning interpolates the complete `{url}`. `AccessService.Build` sends that warning to the logger, contradicting the documentation’s assurance that plugin logs never contain URLs.
+
+   **Reproduced:** The warning callback received the credentials unchanged.
+
+   **Smallest fix:** Replace `{url}` with `Redact.ShortHash(url)`, optionally accompanied by `Redact.Location(url)`.
+
+Outside these findings, I found no additional bypass in the supplied claim/exemption logic, ID-based rename/deletion handling, malformed-token handling, unknown route IDs, or ordinary nested argument collection. I also checked legacy HLS name restrictions, buffer locality/forwarded-header checks, and the status controller’s elevation attribute. Actual authentication-policy and proxy behavior remain **unverified Jellyfin behavior**.
+
+I excluded the documented anonymous HLS, overlap/collision, device-ID interference, logo-URL and guide-tagging limitations. The first finding is the priority before deployment.

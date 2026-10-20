@@ -21,6 +21,7 @@
 | 2026-10-20 | Gate 3.5 fix 7: startup self-check, failed state, admin status API | 0423c89 | 197/197 acceptance |
 | 2026-10-20 | Step 3: admin settings page (tuners, user mapping, self-check status) | 21b0a32 | 206/206 acceptance |
 | 2026-10-20 | Step 4: deploy runbook, overlap check, release packaging, self-healing guide fixture, review files | 55347f7 | 208/208 acceptance |
+| 2026-10-20 | Final review R1: static exemption only from liveStreamId / params 22 (Sol #1, Argon #6) | 6bfe9f2 | 212/212 acceptance |
 
 ## Scale test (16,000 channels), 2026-10-19
 
