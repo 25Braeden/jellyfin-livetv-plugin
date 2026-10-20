@@ -55,3 +55,39 @@ public class ReviewFinalSyncTests
         await sync.StopAsync(CancellationToken.None);
     }
 }
+
+/// <summary>Final review, Argon #4: a failed save of the owned-tag history must not break every request.</summary>
+public class ReviewFinalSaveFailureTests
+{
+    [Fact]
+    public async Task SnapshotBuild_SurvivesAFailedConfigSave()
+    {
+        var w = new World();
+        w.Plugin.Configuration.OwnedTagHistory = [];
+        w.Access.Invalidate();
+        // The config save throws (full disk, read-only mount): BasePluginOfT.SaveConfiguration doesn't catch.
+        var saves = 0;
+        w.XmlFake.Handlers["SerializeToFile"] = _ =>
+        {
+            saves++;
+            throw new IOException("No space left on device");
+        };
+        try
+        {
+            var snapshot = w.Access.Snapshot;
+            Assert.Contains("livetv-tuner1", snapshot.OwnedTags);
+
+            var a = World.Principal(w.UserA.Id);
+            var args = new System.Collections.Generic.Dictionary<string, object?> { ["itemId"] = w.Tuner1Channel.Id };
+            Assert.Null((await w.RunAt(a, args, "Videos", "GetVideoStream", "GET", null, "itemId")).Status);
+            args["itemId"] = w.Tuner2Channel.Id;
+            Assert.Equal(403, (await w.RunAt(a, args, "Videos", "GetVideoStream", "GET", null, "itemId")).Status);
+        }
+        finally
+        {
+            w.XmlFake.Handlers.Remove("SerializeToFile");
+        }
+
+        Assert.True(saves >= 1);
+    }
+}

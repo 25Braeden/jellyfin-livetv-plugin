@@ -923,3 +923,22 @@ once and checks that a retried users pass repairs the user's blocked tags.
 `UserManager.GetUsers()` loads fresh entities from the database on every call (`UserManager.cs:99-104`), so a failed
 save leaves the stored value unchanged and the next pass sees the difference again. The reviewer's harness reused one
 in-memory object across passes.
+
+### R6. A failed save of the owned-tag history doesn't break requests (Argon #4)
+
+**Confirmed in code and in a unit test** (not reproduced live: it needs a failing disk write).
+- `AccessService.Build` runs inside the snapshot lock and calls `Plugin.Instance?.SaveConfiguration()` when tuner tags
+  are newly claimed.
+- That save doesn't catch (`BasePluginOfT.cs:143-151`). If it throws (full disk, read-only mount), `_snapshot` stays
+  null, every later `Snapshot` read throws again, and every non-admin request (library included) fails with 500.
+  That fails closed, but it is an outage.
+
+**Fix:** the save is wrapped; a failure is logged as an error, the history stays in memory for this run, and the
+snapshot is built.
+
+Argon's other points here are not findings:
+- The lock-held disk write happens only when a tag is newly claimed (rare).
+- The "race with `UpdateConfiguration`" is harmless: `UpdateConfiguration` merges the history (`Plugin.cs`).
+
+The test failed first. Its first version passed by mistake, because the harness's XML serializer was a no-op; it now
+makes `SerializeToFile` throw.

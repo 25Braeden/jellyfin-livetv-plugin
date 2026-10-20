@@ -545,7 +545,17 @@ public class AccessService
             // Remember them (so a later-removed tuner's tag is still cleaned up). SaveConfiguration doesn't raise
             // ConfigurationChanged, so this can't trigger another sync.
             config.OwnedTagHistory = [.. history, .. newlyClaimed];
-            Plugin.Instance?.SaveConfiguration();
+            try
+            {
+                Plugin.Instance?.SaveConfiguration();
+            }
+#pragma warning disable CA1031 // Persisting the history is bookkeeping: a failed write must not break every request.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                // The history stays in memory for this run; the next successful config save persists it.
+                _logger.LogError(ex, "LiveTvAccess: could not save the owned-tag history; continuing (enforcement is unaffected)");
+            }
         }
 
         _logger.LogInformation(

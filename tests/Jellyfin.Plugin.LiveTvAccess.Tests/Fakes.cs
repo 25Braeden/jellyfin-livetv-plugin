@@ -125,7 +125,8 @@ public sealed class World
         var dir = Path.Combine(Path.GetTempPath(), "livetvaccess-tests");
         pathsFake.Handlers["get_PluginConfigurationsPath"] = _ => dir;
         pathsFake.Handlers["get_PluginsPath"] = _ => dir;
-        var (xml, _) = Fake<IXmlSerializer>.Create();
+        var (xml, xmlFake) = Fake<IXmlSerializer>.Create();
+        XmlFake = xmlFake;
         var (users, usersFake) = Fake<IUserManager>.Create();
         UsersFake = usersFake;
         usersFake.Handlers["GetUserById"] = args => Users.FirstOrDefault(u => u.Id == (Guid)args[0]!);
@@ -251,6 +252,9 @@ public sealed class World
     public Dictionary<Guid, BaseItem> Items { get; } = new();
 
     public Fake<ILibraryManager> LibraryFake { get; }
+
+    /// <summary>The plugin's XML serializer (config saves); a no-op unless a test sets a handler.</summary>
+    public Fake<IXmlSerializer> XmlFake { get; }
 
     public Fake<IUserManager> UsersFake { get; }
 
