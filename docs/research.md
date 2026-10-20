@@ -942,3 +942,24 @@ Argon's other points here are not findings:
 
 The test failed first. Its first version passed by mistake, because the harness's XML serializer was a no-op; it now
 makes `SerializeToFile` throw.
+
+### R7. Renamed tuner keys: the old tag stays blocked while channels are re-tagged (independent review Q3)
+
+**Confirmed in code** (not reproducible live at 7 channels: the window lasts milliseconds; at 16k channels the first
+channels pass took ~53 s).
+- A pass syncs users before channels (`TagSyncService.cs:287-289`).
+- `TagOwnership.Merge` drops every owned tag, history included, and keeps only the current keys (`TagOwnership.cs:51-53`).
+- After `tuner1` is renamed to `news`, other users stop blocking `livetv-tuner1` while channels still carry it, so those
+  channels appeared in their listings until re-tagged. Playback stayed denied throughout.
+
+**Fix:**
+- The users pass that runs before a channels pass, and any user sync in the middle of a channels pass, block the
+  plugin's history tags too (`UserTunerMap.GetBlockedTags(user, ownedTags)`: every owned tag except the user's own).
+- After the channels pass, a final users pass drops them again, so fix 3's "a removed tuner's tag is cleaned up from
+  users" still holds. Its test passes unchanged.
+- The new test captures B's blocked tags during the channels pass after a rename. It failed on the old code and passes
+  now.
+
+**Remaining, accepted:** *swapping* the URLs of two keys can't be covered by tags. A's key then points at the other
+URL, and channels still tagged with A's key show in A's listings until re-tagged. Playback is still denied by the
+filter, and this only happens during an admin reconfiguration.

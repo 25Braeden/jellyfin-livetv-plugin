@@ -284,12 +284,23 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
 
         // One snapshot for the whole pass; if the config changes mid-pass the pass is abandoned and redone.
         var pass = new PassContext(_access.Snapshot);
-        var updatedUsers = users ? await SyncUsersAsync(pass, ct).ConfigureAwait(false) : 0;
+        // While channels may still carry old tags (a renamed or removed key), users also block the plugin's history
+        // tags; once the channels pass has re-tagged everything, a final users pass drops them again.
+        var updatedUsers = users ? await SyncUsersAsync(pass, includeHistory: channels, ct).ConfigureAwait(false) : 0;
         var usersDone = Stopwatch.GetTimestamp();
         var (pages, retagged, midPassUsers) = channels ? await SyncChannelsAsync(pass, ct).ConfigureAwait(false) : (0, 0, 0);
         if (IsSuperseded(pass))
         {
             return false;
+        }
+
+        if (channels)
+        {
+            updatedUsers += await SyncUsersAsync(pass, includeHistory: false, ct).ConfigureAwait(false);
+            if (IsSuperseded(pass))
+            {
+                return false;
+            }
         }
 
         _logger.LogInformation(
@@ -393,7 +404,7 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
             {
                 try
                 {
-                    users += await SyncUsersAsync(pass, ct).ConfigureAwait(false);
+                    users += await SyncUsersAsync(pass, includeHistory: true, ct).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -406,7 +417,7 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
         return (pages, retagged, users);
     }
 
-    private async Task<int> SyncUsersAsync(PassContext pass, CancellationToken ct)
+    private async Task<int> SyncUsersAsync(PassContext pass, bool includeHistory, CancellationToken ct)
     {
         var snapshot = pass.Snapshot;
         var changed = 0;
@@ -415,7 +426,11 @@ public sealed class TagSyncService : IHostedService, ISyncSignals, IDisposable
             ct.ThrowIfCancellationRequested();
 
             // Admins are never restricted: strip our tags, keep any the admin set themselves.
-            var desired = user.HasPermission(PermissionKind.IsAdministrator) ? [] : snapshot.Map.GetBlockedTags(user.Id);
+            // With includeHistory, others' tags include the plugin's history tags: after a key rename, channels still
+            // carry the old tag until the channels pass re-tags them.
+            var desired = user.HasPermission(PermissionKind.IsAdministrator)
+                ? []
+                : includeHistory ? snapshot.Map.GetBlockedTags(user.Id, snapshot.OwnedTags) : snapshot.Map.GetBlockedTags(user.Id);
             var current = user.GetPreference(PreferenceKind.BlockedTags);
             pass.NoteClaimedInUse(current, isUser: true);
             var blocked = TagOwnership.Merge(current, snapshot.OwnedTags, desired, out var foreign).ToArray();

@@ -1,3 +1,4 @@
+using System.Linq;
 using LiveTvAccess.Core;
 using Xunit;
 
@@ -76,5 +77,36 @@ public class ReviewFinalLoggingTests
         }
 
         Assert.Contains(warnings, w => w.Contains("http://provider.example", System.StringComparison.Ordinal) && w.Contains(Redact.ShortHash(Url), System.StringComparison.Ordinal));
+    }
+}
+
+/// <summary>Final review Q3: history tags stay blocked, so renaming a tuner key exposes nothing while channels are re-tagged.</summary>
+public class ReviewFinalBlockedTagTests
+{
+    private static readonly System.Guid UserA = System.Guid.Parse("00000000-0000-0000-0000-00000000000a");
+    private static readonly System.Guid UserB = System.Guid.Parse("00000000-0000-0000-0000-00000000000b");
+    private static readonly System.Guid UserC = System.Guid.Parse("00000000-0000-0000-0000-00000000000c");
+
+    [Fact]
+    public void AfterRenamingTuner1ToNews_EveryoneButNewsUsersKeepsBlockingTheOldTag()
+    {
+        // tuner1 was renamed to "news"; livetv-tuner1 is history, channels still carry it until re-tagged.
+        var map = new UserTunerMap(["news", "tuner2"], [new(UserA, "news"), new(UserB, "tuner2")]);
+        var owned = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase)
+        {
+            "livetv-tuner1", "livetv-news", "livetv-tuner2", "livetv-unassigned",
+        };
+
+        Assert.Equal(["livetv-news", "livetv-tuner1", "livetv-unassigned"], map.GetBlockedTags(UserB, owned).Order());
+        Assert.Equal(["livetv-tuner1", "livetv-tuner2", "livetv-unassigned"], map.GetBlockedTags(UserA, owned).Order());
+        Assert.Equal(["livetv-news", "livetv-tuner1", "livetv-tuner2", "livetv-unassigned"], map.GetBlockedTags(UserC, owned).Order());
+    }
+
+    [Fact]
+    public void CurrentTagsAreBlocked_EvenIfNotYetInTheOwnedSet()
+    {
+        var map = new UserTunerMap(["tuner1", "tuner2"], [new(UserA, "tuner1")]);
+        var owned = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(["livetv-tuner2", "livetv-unassigned"], map.GetBlockedTags(UserA, owned).Order());
     }
 }

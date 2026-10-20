@@ -66,6 +66,24 @@ public sealed class UserTunerMap
     }
 
     /// <summary>
+    /// Gets the tags to block for a user, including every tag the plugin has ever owned (history) except the user's
+    /// own tuner tag.
+    /// </summary>
+    /// <param name="userId">The user.</param>
+    /// <param name="ownedTags">The tags the plugin owns, history included.</param>
+    /// <returns>The tags to block.</returns>
+    public IReadOnlyList<string> GetBlockedTags(Guid userId, IReadOnlySet<string> ownedTags)
+    {
+        ArgumentNullException.ThrowIfNull(ownedTags);
+        var own = GetTuner(userId) is { } key ? TunerTags.ForTuner(key) : null;
+        return GetBlockedTags(userId)
+            .Concat(ownedTags)
+            .Where(t => !string.Equals(t, own, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    /// <summary>
     /// Gets the channel tags a user must not see: every tuner's tag except their own, plus
     /// <see cref="TunerTags.Unassigned"/>. A user with no tuner gets every tuner's tag (deny by default).
     /// </summary>

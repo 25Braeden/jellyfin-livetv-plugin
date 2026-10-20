@@ -91,3 +91,39 @@ public class ReviewFinalSaveFailureTests
         Assert.True(saves >= 1);
     }
 }
+
+/// <summary>
+/// Final review Q3: after a tuner key rename, users keep blocking the old tag while the channels pass re-tags
+/// channels; afterwards the old tag is dropped (fix 3: a removed tuner's tag is cleaned up from users).
+/// </summary>
+public class ReviewFinalHistoryTagTests
+{
+    [Fact]
+    public async Task RenamedKey_OldTagStaysBlockedDuringTheChannelsPass_ThenDropped()
+    {
+        var w = new World();
+        using var sync = w.CreateSync();
+        await sync.StartAsync(CancellationToken.None);
+        await World.Eventually(() => sync.IsReady && w.Tuner1Channel.Tags.Contains("livetv-tuner1"), "first sync");
+
+        string[]? duringChannelsPass = null;
+        w.OnGetItemList = _ => duringChannelsPass ??= w.UserB.GetPreference(PreferenceKind.BlockedTags);
+        w.SetConfig(new Configuration.PluginConfiguration
+        {
+            Tuners = [new Configuration.TunerConfig { Key = "news", Url = World.Tuner1Url }, new Configuration.TunerConfig { Key = "tuner2", Url = World.Tuner2Url }],
+            Users = [new Configuration.UserTunerConfig { UserId = w.UserA.Id, TunerKey = "news" }, new Configuration.UserTunerConfig { UserId = w.UserB.Id, TunerKey = "tuner2" }],
+            OwnedTagHistory = w.Plugin.Configuration.OwnedTagHistory,
+        });
+        sync.MarkUsersDirty("config change");
+        sync.MarkChannelsDirty("config change");
+
+        await World.Eventually(
+            () => w.Tuner1Channel.Tags.Contains("livetv-news")
+                && w.UserB.GetPreference(PreferenceKind.BlockedTags).Order().SequenceEqual(["livetv-news", "livetv-unassigned"]),
+            "channels re-tagged and B's history tag dropped");
+        Assert.NotNull(duringChannelsPass);
+        Assert.Contains("livetv-tuner1", duringChannelsPass!);
+        Assert.Contains("livetv-news", duringChannelsPass!);
+        await sync.StopAsync(CancellationToken.None);
+    }
+}
