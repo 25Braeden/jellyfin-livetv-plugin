@@ -7,8 +7,13 @@ tuners/*
 !tuners/tuner1.m3u
 !tuners/tuner2.m3u
 
-# Secrets
+# Secrets (copy .env.example to .env and fill it in)
 .env
+.env.*
+!.env.example
+
+# Plugin config written for a deploy: it holds the real tuner URLs, which can embed provider credentials
+Jellyfin.Plugin.LiveTvAccess.xml
 
 # Test media
 test-media/*
@@ -17,13 +22,26 @@ test-media/*
 # .NET build output
 bin/
 obj/
+TestResults/
+*.user
+*.suo
+.vs/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
 .DS_Store
+Thumbs.db
 
 # Python bytecode
 __pycache__/
 
 # Release packages (scripts/package_release.sh)
 dist/
+
+# Test and script output
+*.log
 
 # Generated review bundles (regenerate; never commit)
 review/bundle-*.txt
