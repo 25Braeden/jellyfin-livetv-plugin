@@ -50,3 +50,32 @@ Recommendation: import only the channels you want; see research.md for options.
 | 2026-10-20 | Final review: full findings table (docs) | ba997b9 | Gate 3 219/219 |
 | 2026-10-20 | Final review R11: cap of 1000 distinct identifiers per request (Q2) | e1fc98b | Gate 3 224/224 |
 | 2026-10-20 | Final review R12: opens of the same channel / stream serialized (Q4); overlap check is a go-live hard stop | 5957e2f | Gate 3 224/224 |
+
+## Jellyfin 12.2 port (local fake-data stack, 2026-10-22)
+
+| Milestone | Commit | Verification |
+|---|---|---|
+| net10.0, Jellyfin.Controller/Model 12.2.0, session DTO traversal port | 4f57d6f | Core 175/175; plugin 225/225 |
+| 12.2 compose/deploy scripts and environment-targetable Gate 3 | e88701a | Local port 8097; separate container/config names |
+| API-only fixture setup | d91f2c0 | Wizard, admin, A/B/C, two limit-1 M3U tuners, XMLTV; no manual tagging |
+| Restore missing fake media (gitignored; no commit) | — | clip1.mp4 472128 bytes; clip2.mp4 300844; live1.ts 13163760 |
+| Release package uses current DLLs and ABI 12.2.0.0 | 3a44c53 | Regression failed first for stale net9.0/ABI; passed after fix; actual archive verified |
+| Section 5 log boundary retains microseconds | 88cd4c2 | Regression failed first; same safety assertion, no check skipped or relaxed |
+
+- Original incomplete attempt: **65 PASS / 7 FAIL**, abort at section 14 due to missing clip1.mp4.
+  Every original failure and its classification is recorded in the 12.2 section of `docs/research.md`.
+- Full run 1, with copied media and unchanged Gate 3 assertions: **224 PASS / 0 FAIL of 224**.
+- Full run 2, after the packaging fix: **224 PASS / 0 FAIL of 224**.
+- Final run 3, after the timestamp precision fix: **224 PASS / 0 FAIL of 224**.
+- All completed runs execute every section 0–21 (section 10 logging is deliberately last),
+  under `caffeinate -dis`, unbuffered Python, and a pipefail-protected tee pipeline.
+  Logs: `/tmp/gate3_12_run1.log`, `/tmp/gate3_12_run2.log`, `/tmp/gate3_12_run3.log`.
+- Build: **0 warnings / 0 errors**. Core **175/175**, plugin **225/225**, no skipped tests;
+  additional Python tooling regressions **2/2**.
+- Plugin Active and Healthy on the local 12.2 server. Release/deploy manifests both use
+  `targetAbi: 12.2.0.0`, with both whitelisted DLLs present.
+- No category (c) port failure found in completed runs; no plugin enforcement code changed.
+  Source-sweep watch items and the 10.11 NowViewingItem applicability are in `docs/research.md`.
+- Not verified: real clients/providers/tuner hardware, real second tuner, HLS/DASH provider
+  sources, 12.2 large-guide scale, or end-to-end websocket safety. No production access,
+  branch changes, merge, push, software installs, or modifications to the original project.

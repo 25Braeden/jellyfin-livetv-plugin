@@ -1075,3 +1075,105 @@ request.
 Gate 3 section 17 repeats this three times.
 
 `docs/deploy.md`: the overlap check (`m3u_overlap.py`) must report zero overlaps before go-live. It is a hard stop.
+
+## Jellyfin 12.2 port and local verification (2026-10-22)
+
+This section uses `../jellyfin-12` (12.2.0); the earlier research above remains about
+`../jellyfin` (10.11.11). Only local fake tuners and media were used. No production access.
+
+### Port and packaging
+
+- `4f57d6f`: target `net10.0`, pin Jellyfin.Controller/Model to 12.2.0, replace the removed
+  `SessionInfoDto.NowPlayingQueueFullItems` traversal with `NowViewingItem`; the id-only
+  `NowPlayingQueue` remains. `Port12Tests` covers both session DTO items and copy isolation.
+- `e88701a`: isolated local 12.2 compose/deploy tooling and environment-targetable acceptance scripts.
+- `d91f2c0`: API-only setup helper (`scripts/setup12.py`), no manual channel-tag experiment.
+- `3a44c53`: release packaging now selects `net10.0`, not stale `net9.0` output, and writes
+  `targetAbi: 12.2.0.0`. A sandbox regression test failed first on both old DLL selection and ABI,
+  then passed. Actual directory and archive manifests were checked: both whitelisted DLLs exist,
+  are nonempty, and the release archive DLLs match the net10.0 build.
+- 12.2 `Emby.Server.Implementations/Plugins/PluginManager.cs:745-755` compares server version
+  against targetAbi; `:891-933` requires every whitelisted DLL path to exist inside the plugin.
+  The local deploy manifest also uses 12.2.0.0; `/Plugins` reports Active.
+
+### Fixture failures and log-window evidence
+
+The first, incomplete 12.2 attempt recorded **65 pass / 7 fail** and aborted entering section 14.
+The clone lacked `clip1.mp4`, `clip2.mp4`, and `live1.ts`. All three were copied from the original
+project's test-media directory, verified nonempty and gitignored; nothing there was changed.
+
+| Original check | Category | Cause / action |
+|---|---|---|
+| Section 5: no upstream request from blocked streaming calls | (a), harness timing | Whole-second log boundary included the preceding allowed open; preserve microseconds |
+| Section 7: A same channel from 2 sessions shares one stream | (a), fixtures | Missing live1.ts; restored fixture; sharing then passed |
+| Section 8: A plays Shared Channel | (a), fixtures | Missing clip1.mp4; restored |
+| Section 8: A plays Test Live TS | (a), fixtures | Missing live1.ts; restored |
+| Section 8: A plays Test News | (a), fixtures | Missing clip1.mp4; restored |
+| Section 8: A plays Test Sports | (a), fixtures | Missing clip2.mp4; restored |
+| Section 12: A plays again once native Live TV is back on | (a), fixtures | Missing clip1.mp4; restored |
+| Section 14 abort (not a recorded FAIL check) | (a), fixtures | FileNotFoundError copying clip1.mp4 into the library fixture |
+
+**Section 5 confirmed, not merely suspected:** original fakestreams Docker timestamps show the
+allowed section-4 movies request completed at `2026-10-22T03:59:21.253221175Z` (404 due to the
+missing fixture). Jellyfin closed that stream at `03:59:21.270`; section 5 starts immediately
+afterwards, but its `strftime` marker was rounded down to `03:59:21Z`. Its denied calls occurred
+at `03:59:22.327` and `.345`. Fakestreams has no requests from those denied calls; the earlier
+allowed request was counted in the wrong interval. Commit `88cd4c2` preserves fractional RFC3339
+precision for this one boundary. Docker accepts it unchanged. The assertion and inspected calls
+are unchanged: every upstream request after the boundary still fails the check. A regression test
+first reproduced the rounded boundary, then passed with the precision fix. No safety check was
+skipped, removed, or relaxed.
+
+With media restored, Gate 3 run 1 completed **224/224** even before the timing change. Run 2 after
+the packaging fix and final run 3 after the timestamp fix also completed **224 PASS / 0 FAIL of 224**.
+All three runs executed every section through 21 and the final section 10 logging checks.
+All runs use the documented five 12.2 environment variables, `python3 -u`,
+`caffeinate -dis`, and a pipefail-protected `tee` pipeline. Logs are `/tmp/gate3_12_run*.log`.
+Build: zero warnings/errors. Unit tests: Core 175/175, plugin 225/225, none skipped; two additional
+stdlib Python tooling regressions pass. No plugin security logic was patched during this completion.
+
+### Extra source sweep (report, not new security policy)
+
+Compared the controller surfaces used by `LiveTvEndpoints`, collector inputs, scrubbed DTOs,
+claims, provider IDs, tuner sharing, buffer routes, transcode paths, and legacy/dynamic HLS.
+
+- **Legacy prefixes removed:** 10.11.11 `Jellyfin.Server/Extensions/ApiApplicationBuilderExtensions.cs:129-131`
+  installs `LegacyEmbyRouteRewriteMiddleware`; neither exists in 12.2. Canonical routes, not an
+  automatic acceptance of a new denial code, are the security tests. No Gate 3 checks needed a
+  10.11-assumption exception in this run. Additional local probes of each prefix (public info,
+  A's channel listing, A's hidden-channel static stream, and the same stream anonymously) all
+  returned 404; no compatibility-prefix bypass was observed.
+- **LiveTvEndpoints:** the allowlisted action names and required stream identifiers still exist;
+  runtime endpoint check passes all 30 requirements. `GetRecordingGroup` was removed upstream;
+  it was never allowlisted. The filter's default-deny policy was not changed.
+- **TargetCollector / legacy parameters:** `StreamingHelpers.ParseParams` still uses fields 2
+  (media source), 3 (static), 20 (play session), and 22 (live stream). Protected route/action names
+  and parameter types remain compatible. `breakOnNonKeyFrames` disappeared from streaming
+  actions and profiles; it is not a target identifier and the collector does not depend on it.
+- **ResponseScrubber:** MediaSourceInfo, PlaybackInfoResponse, LiveStreamResponse, LiveTvOptions,
+  TunerHostInfo and ListingsProviderInfo have no source changes. BaseItemDto adds only language
+  and audio-normalization metadata. Claim constants and CustomAuthenticationHandler are unchanged.
+- **HLS watch item:** 12.2 `HlsSegmentController.ValidateTranscodePath` tightens directory checking,
+  and `GetHlsPlaylistLegacy` now accepts .m3u8 (the old extension check was inverted). Dynamic HLS
+  also serializes segment selection/job replacement and waits for active requests. The plugin's
+  running-job and item/tuner checks remain necessary; the existing traversal, finished-job,
+  cross-tuner, buffer-file and real-playback checks pass. No bypass was demonstrated.
+- **Self-check coverage limitation:** `DynamicHls.GetLiveHlsStream` remains outside the explicit
+  30-action EndpointContract list in both branches, although the generic opening filter covers
+  its controller and Gate 3 exercises live.m3u8 playback. Stale 10.11 source-line comments in the
+  filter/contract files are not evidence of complete 12.2 API coverage.
+- **Manifest sources not exercised:** 12.2 M3UTunerHost disables direct play for HLS/DASH playlist
+  sources (`.m3u8`, `.m3u`, `.mpd`); these fake tuners use MP4/TS, so that upstream change and real
+  providers/clients need separate testing. Channel/media-source ID and LiveTvMediaSourceProvider
+  source are unchanged; native sharing and concurrent twin-open denials pass.
+- **NowViewingItem also applies to 10.11.11:** its DTO has the property at
+  `MediaBrowser.Model/Dto/SessionInfoDto.cs:107`; `SessionManager.cs:1198` returns it, and
+  `:1855-1862` populates it through GetItemInfo. Thus it is not a new 12.2-only carrier: the same
+  defensive traversal is compatible with 10.11.11 too. Importantly, its normal GetItemInfo path
+  removes ItemFields.MediaSources (`:1813`), so existence of the property alone does not prove
+  an upstream-URL leak. The regression injects a synthetic DTO with media sources. This is
+  source-level confirmation, not a reproduced live 10.11 leak; main was not modified or tested here.
+
+Unverified: real clients, a real provider, real tuner hardware (including a real second tuner),
+HLS/DASH provider sources, large live guide scale on 12.2, and end-to-end websocket responses
+(existing accepted gaps in the earlier research are not reclassified as fixed).
