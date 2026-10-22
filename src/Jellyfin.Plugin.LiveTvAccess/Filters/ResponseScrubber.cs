@@ -125,7 +125,8 @@ public static class ResponseScrubber
         => items?.Aggregate(false, (found, dto) => Item(dto, scrub) | found) ?? false;
 
     private static bool Session(SessionInfoDto session, bool scrub)
-        => (session.NowPlayingItem is { } now && Item(now, scrub)) | Any(session.NowPlayingQueueFullItems, scrub);
+        => (session.NowPlayingItem is { } now && Item(now, scrub))
+            | (session.NowViewingItem is { } viewing && Item(viewing, scrub));
 
     private static bool Item(BaseItemDto dto, bool scrub)
         => Sources(dto.MediaSources, dto.Type is { } kind && _liveTvKinds.Contains(kind), scrub);

@@ -134,7 +134,7 @@ public static class EndpointContract
             (typeof(PlaybackInfoResponse), ["MediaSources"]),
             (typeof(LiveStreamResponse), ["MediaSource"]),
             (typeof(BaseItemDto), ["MediaSources", "Type"]),
-            (typeof(SessionInfoDto), ["NowPlayingItem", "NowPlayingQueueFullItems"]),
+            (typeof(SessionInfoDto), ["NowPlayingItem", "NowViewingItem"]),
             (typeof(QueryResult<BaseItemDto>), ["Items"]),
             (typeof(LiveTvOptions), ["TunerHosts", "ListingProviders"]),
             (typeof(TunerHostInfo), ["Id", "Type", "Url", "Source"]),
