@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the plugin and package it for a MANUAL production deploy (see docs/deploy.md).
+# Build the 12.2 plugin and package it for a MANUAL deploy; never connects to a server.
 # Output: dist/LiveTvAccess_0.1.0.0/ and dist/LiveTvAccess_0.1.0.0.tar.gz. Touches nothing outside this project.
 set -eu
 cd "$(dirname "$0")/.."
@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 VERSION=0.1.0.0
 NAME=LiveTvAccess
 DIR="${NAME}_${VERSION}"
-OUT=src/Jellyfin.Plugin.LiveTvAccess/bin/Release/net9.0
+OUT=src/Jellyfin.Plugin.LiveTvAccess/bin/Release/net10.0
 
 export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
 export PATH="$DOTNET_ROOT:$PATH"
@@ -29,7 +29,7 @@ cat > "dist/$DIR/meta.json" <<EOF
   "name": "${NAME}",
   "overview": "Per-user Live TV tuner access",
   "owner": "local",
-  "targetAbi": "10.11.0.0",
+  "targetAbi": "12.2.0.0",
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "version": "${VERSION}",
   "status": "Active",
