@@ -233,7 +233,9 @@ def main():
         admin.post("/LiveStreams/Close", liveStreamId=res["MediaSource"]["LiveStreamId"])
 
     print("== 5. streaming endpoints without a live stream (hole 3)")
-    stream_since = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Docker accepts fractional RFC3339 timestamps. Do not include the preceding allowed
+    # open's upstream request merely because it completed earlier in this same second.
+    stream_since = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     time.sleep(1)
     # Valid requests (mediaSourceId is required on HLS, else ASP.NET returns 400 before any filter).
     ms_movies = n.ok(admin.post(f"/Items/{movies}/PlaybackInfo", {"UserId": aid}, userId=aid), "pi")["MediaSources"][0]["Id"]
