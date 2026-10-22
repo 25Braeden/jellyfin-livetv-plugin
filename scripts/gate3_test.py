@@ -155,7 +155,7 @@ def fresh_guide(admin, aid, reason):
     cfg = n.ok(admin.get("/System/Configuration/livetv"), "livetv config")
     for provider in cfg.get("ListingProviders", []):
         if provider.get("Path") == n.GUIDE_PATH_IN_CONTAINER and provider.get("Id"):
-            cached = n.ROOT / "local" / "cache" / "xmltv" / (provider["Id"] + ".xml")
+            cached = n.ROOT / n.LOCAL_DIR / "cache" / "xmltv" / (provider["Id"] + ".xml")
             if cached.exists() and cached.stat().st_mtime < n.GUIDE_FILE.stat().st_mtime:
                 cached.unlink()
     result = n.run_task(admin, "RefreshGuide")
@@ -424,7 +424,7 @@ def main():
     st, _ = anon_get(f"/Videos/{news}/master.m3u8?mediaSourceId={ms_news_id}")
     check("anonymous HLS master, tuner1 channel = denied (401 by Jellyfin auth, or 403)", st in (401, 403), f"HTTP {st}")
     time.sleep(2)
-    opened = [l for l in subprocess.run(["docker", "logs", "--since", anon_since, "jellyfin-dev"], capture_output=True, text=True).stdout.splitlines()
+    opened = [l for l in subprocess.run(["docker", "logs", "--since", anon_since, n.JELLYFIN_CONTAINER], capture_output=True, text=True).stdout.splitlines()
               if "Opening channel stream" in l]
     check("anonymous attempts opened no tuner and made no upstream request",
           not opened and not n.fakestreams_requests(anon_since))
@@ -489,7 +489,7 @@ def main():
         check("buffer URL, admin API key = allowed", st == 200 and len(body) > 0, f"HTTP {st}")
 
         def in_container(url, *headers):
-            cmd = ["docker", "exec", "jellyfin-dev", "curl", "-s", "-o", "/dev/null", "-m", "3", "-w", "%{http_code} %{size_download}", url]
+            cmd = ["docker", "exec", n.JELLYFIN_CONTAINER, "curl", "-s", "-o", "/dev/null", "-m", "3", "-w", "%{http_code} %{size_download}", url]
             for h in headers:
                 cmd += ["-H", h]
             out = subprocess.run(cmd, capture_output=True, text=True).stdout.split()
@@ -588,7 +588,7 @@ def main():
               f"{segs[0][:30] if segs else '-'} HTTP {st}")
         A6.call("DELETE", "/Videos/ActiveEncodings", query={"deviceId": "gate3-A-fix5c", "playSessionId": info["PlaySessionId"]})
         time.sleep(1)
-        log = subprocess.run(["docker", "logs", "--since", hls_since, "jellyfin-dev"], capture_output=True, text=True)
+        log = subprocess.run(["docker", "logs", "--since", hls_since, n.JELLYFIN_CONTAINER], capture_output=True, text=True)
         ffmpeg = [l for l in (log.stdout + log.stderr).splitlines() if "/ffmpeg" in l and "libx264" in l]
         check("Jellyfin's own ffmpeg transcoded the movie (libx264)", bool(ffmpeg))
 
@@ -739,7 +739,7 @@ def main():
             return type(e).__name__, b""
 
     def upstream_hits(since, marker):
-        logs = subprocess.run(["docker", "logs", "--since", since, "fakestreams"], capture_output=True, text=True)
+        logs = subprocess.run(["docker", "logs", "--since", since, n.FAKESTREAMS_CONTAINER], capture_output=True, text=True)
         return (logs.stdout + logs.stderr).count(marker)
 
     params3 = ";".join("true" if i == 3 else "" for i in range(29))
@@ -842,7 +842,7 @@ def main():
     check("tags back in sync after the fix", wait_for(lambda: tags_match(admin, aid, n.expected_channels())))
     ok9, detail9 = plays(A9, a9u, news)
     check("after recovery A plays A's own channel again", ok9, detail9)
-    log9 = subprocess.run(["docker", "logs", "--since", since9, "jellyfin-dev"], capture_output=True, text=True)
+    log9 = subprocess.run(["docker", "logs", "--since", since9, n.JELLYFIN_CONTAINER], capture_output=True, text=True)
     log9 = log9.stdout + log9.stderr
     check("server log: SELF-CHECK FAILED error, then 'restored'",
           "SELF-CHECK FAILED" in log9 and "Live TV access restored" in log9)
@@ -857,7 +857,7 @@ def main():
     source = (n.ROOT / "src" / "Jellyfin.Plugin.LiveTvAccess" / "Configuration" / "configPage.html").read_bytes()
     check("server serves the embedded page byte-for-byte", st == 200 and html == source, f"HTTP {st}, {len(html)} bytes")
     script = html.decode().split('<script type="text/javascript">', 1)[-1].split("</script>", 1)[0]
-    js = pathlib.Path(n.ROOT / "local" / "page-script-check.js")
+    js = pathlib.Path(n.ROOT / n.LOCAL_DIR / "page-script-check.js")
     js.write_text(script)
     try:
         node = subprocess.run(["node", "--check", str(js)], capture_output=True, text=True)
@@ -936,7 +936,7 @@ def main():
 
     print("== 10. logging")
     time.sleep(1)
-    log = subprocess.run(["docker", "logs", "--since", since, "jellyfin-dev"], capture_output=True, text=True)
+    log = subprocess.run(["docker", "logs", "--since", since, n.JELLYFIN_CONTAINER], capture_output=True, text=True)
     log = log.stdout + log.stderr
     plugin_lines = [l for l in log.splitlines() if "LiveTvAccess" in l]
     check("plugin never logs a full open token", not any(t in l for t in tokens_used for l in plugin_lines))

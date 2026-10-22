@@ -27,7 +27,13 @@ import urllib.parse
 import urllib.request
 import uuid
 
-BASE = "http://localhost:8096"
+# Target stack: defaults are the 10.11 stack. For the 12.2 stack set LIVETV_BASE=http://localhost:8097,
+# LIVETV_JELLYFIN_CONTAINER=jellyfin-dev-12, LIVETV_FAKESTREAMS_CONTAINER=fakestreams-12,
+# LIVETV_LOCAL_DIR=local12 and LIVETV_API_KEY_VAR=JELLYFIN_API_KEY_12 (see docs/port-12-setup.md).
+BASE = os.environ.get("LIVETV_BASE", "http://localhost:8096")
+JELLYFIN_CONTAINER = os.environ.get("LIVETV_JELLYFIN_CONTAINER", "jellyfin-dev")
+FAKESTREAMS_CONTAINER = os.environ.get("LIVETV_FAKESTREAMS_CONTAINER", "fakestreams")
+LOCAL_DIR = os.environ.get("LIVETV_LOCAL_DIR", "local")
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # LIVETV_FIXTURES=scale switches to the generated (gitignored) playlists in tuners/scale/.
 FIXTURES = os.environ.get("LIVETV_FIXTURES", "").strip("/")
@@ -49,16 +55,18 @@ CLIENT = 'MediaBrowser Client="nocode-experiment", Device="script", DeviceId="{d
 # ---------------------------------------------------------------- helpers
 
 def load_api_key():
+    # The .env variable name, so the 10.11 and 12.2 stacks can hold different keys.
+    var = os.environ.get("LIVETV_API_KEY_VAR", "JELLYFIN_API_KEY")
     env = ROOT / ".env"
     if not env.exists():
-        sys.exit("ERROR: .env not found (needs JELLYFIN_API_KEY=...)")
+        sys.exit(f"ERROR: .env not found (needs {var}=...)")
     for line in env.read_text().splitlines():
         line = line.strip()
-        if line.startswith("JELLYFIN_API_KEY="):
+        if line.startswith(f"{var}="):
             value = line.split("=", 1)[1].strip().strip('"').strip("'")
             if value:
                 return value
-    sys.exit("ERROR: JELLYFIN_API_KEY missing or empty in .env")
+    sys.exit(f"ERROR: {var} missing or empty in .env")
 
 
 class Api:
@@ -276,9 +284,9 @@ def refresh(admin):
 
 
 def fakestreams_requests(since):
-    out = subprocess.run(["docker", "logs", "--since", since, "fakestreams"],
+    out = subprocess.run(["docker", "logs", "--since", since, FAKESTREAMS_CONTAINER],
                          capture_output=True, text=True).stdout + \
-        subprocess.run(["docker", "logs", "--since", since, "fakestreams"],
+        subprocess.run(["docker", "logs", "--since", since, FAKESTREAMS_CONTAINER],
                        capture_output=True, text=True).stderr
     return [l for l in out.splitlines() if '"GET /' in l or '"HEAD /' in l]
 
