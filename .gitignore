@@ -2,6 +2,10 @@
 local/*
 !local/.gitkeep
 
+# Local Jellyfin 12 state (jellyfin-12.2 branch)
+local12/*
+!local12/.gitkeep
+
 # Real tuner playlists may contain provider credentials
 tuners/*
 !tuners/tuner1.m3u
