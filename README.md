@@ -13,10 +13,24 @@ Say you run one Jellyfin server with two M3U tuners (for example, two IPTV provi
 - A user can't run two Live TV streams at once, so nobody can use both tuners.
 - Admins are never restricted.
 
-> **Status: v0.1.0, Jellyfin 10.11.11 only.** The plugin is pinned to that exact server version (see
-> [Compatibility](#compatibility)). It has a large automated test suite and a live acceptance script, but it has
-> not yet been confirmed with real Android TV and iOS clients (the plan is in
-> [`docs/gate5-test-plan.md`](docs/gate5-test-plan.md)). Try it on a test server first.
+> **This branch (`jellyfin-12.2`) is for Jellyfin 12.2.** For Jellyfin 10.11.11, use the
+> [`main` branch](https://github.com/25Braeden/jellyfin-livetv-plugin/tree/main).
+
+| Jellyfin | Branch | Status |
+|---|---|---|
+| 10.11.11 | [`main`](https://github.com/25Braeden/jellyfin-livetv-plugin/tree/main) | tested (Gate 3 224/224, Core/plugin tests) |
+| 12.2 | `jellyfin-12.2` (this branch) | tested (Gate 3 224/224); no real-client smoke test yet |
+
+A build from one branch does **not** work on the other server version. Jellyfin loads a plugin only if the server
+version is >= the plugin's `targetAbi`, and the two branches target different .NET runtimes (`net10.0` here,
+`net9.0` for 10.11) and different Jellyfin APIs. So this 12.2 build won't load on 10.11 (its `targetAbi` is
+12.2.0.0 and 10.11 runs on .NET 9), and the 10.11 build is not supported on 12.2 (Jellyfin may try to load it, but
+it was built against 10.11 APIs). Build from the branch that matches your server.
+
+> **Status: v0.1.0, 12.2 port.** The plugin is pinned to Jellyfin 12.2 (see [Compatibility](#compatibility)). It
+> passes the automated test suite and the live acceptance script (Gate 3, 224/224) on a local 12.2 server, but it
+> has not yet been confirmed with any real client (web, Android TV, iOS); the plan is in
+> [`docs/gate5-test-plan.md`](docs/gate5-test-plan.md). Try it on a test server first, and read [Known limitations / not yet verified](#known-limitations--not-yet-verified).
 
 ## How it works
 
@@ -45,19 +59,22 @@ The design notes, with Jellyfin source file and line references for every hook t
 
 ## Compatibility
 
-- **Jellyfin 10.11.11 only**, i.e. the official `jellyfin/jellyfin:10.11.11` image. The plugin relies on Jellyfin
-  internals (endpoint argument names, response shapes, the channel ID scheme, the `RefreshGuide` task key). On any
-  other version the self-check is expected to fail and Live TV is denied to non-admins. Don't upgrade Jellyfin
+- **Jellyfin 12.2 only** (official `jellyfin/jellyfin` image, tested with the `12.2` tag).
+  Port notes and the 12.2 source review are in [`docs/research.md`](docs/research.md) and
+  [`docs/port-12-setup.md`](docs/port-12-setup.md). The plugin relies on Jellyfin internals (endpoint argument
+  names, response shapes, the channel ID scheme, the `RefreshGuide` task key). On any other version the self-check is expected to fail and Live TV is denied to non-admins. Don't upgrade Jellyfin
   before re-testing the plugin against the new version.
+- **Pin your server image** to an exact version (the full 12.2.x patch tag you tested, or an image digest) in
+  Docker Compose, not `latest` or a floating tag, so an automatic pull can't upgrade Jellyfin underneath the plugin.
 - M3U tuners only. Other tuner types such as HDHomeRun are not supported (the self-check rejects a tuner URL that
   isn't a Jellyfin M3U tuner).
-- Built for `net9.0`.
+- Built for `net10.0` against `Jellyfin.Controller`/`Jellyfin.Model` 12.2.0; `targetAbi` is 12.2.0.0.
 
 ## Install
 
 You build the plugin yourself; there is no plugin repository or prebuilt download yet.
 
-1. Install the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
+1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 2. Build and package it:
 
    ```sh
@@ -96,7 +113,35 @@ Before you go live:
 - Tuner URLs can contain provider credentials. The plugin hides them from non-admins, but keep them out of version
   control.
 
-## Known limitations
+## Known limitations / not yet verified
+
+**What this is, security-wise.** The plugin is a default-deny request filter plus Jellyfin's own tag-based
+visibility (*Block items with tags*). It has been reviewed and has extensive automated and live tests, but it has not
+been independently audited. Treat it as an access-control layer for a trusted household, not as a hardened security
+boundary.
+
+Not yet verified:
+
+- **Real clients.** Tested with scripted API calls (Gate 3) only; no real client app (web, Android TV, iOS) has been
+  smoke-tested yet (see [`docs/gate5-test-plan.md`](docs/gate5-test-plan.md)).
+- **A real provider at scale.** Tests use small fake M3U playlists, not a real IPTV provider with thousands of
+  channels.
+- **A second real tuner.** Both test tuners are fake playlists on one local server; no second real tuner/provider
+  account has been tested.
+- **HLS/DASH provider sources.** Test streams are MP4/TS; providers whose M3U entries point at `.m3u8` or `.mpd`
+  manifests are untested.
+- **WebSocket safety.** Response scrubbing is tested on HTTP API responses; end-to-end WebSocket messages have not been
+  checked live.
+
+Accepted risks:
+
+- **Anonymous legacy HLS segment requests.** Some browsers fetch HLS segments without auth, so anonymous requests on
+  the legacy HLS segment routes are allowed, but only for a currently running transcode job; the random job name is
+  the only secret. See accepted risk A1 in [`docs/research.md`](docs/research.md).
+- Denial of service by device ID and raw logo URLs in image info, documented in [`docs/research.md`](docs/research.md)
+  under "Remaining gaps".
+
+Other limitations:
 
 - Admins see every tuner's channels.
 - With a simultaneous stream limit above 0, Jellyfin disables direct play for Live TV, so all Live TV goes through
@@ -105,8 +150,6 @@ Before you go live:
 - DVR recordings use the same tuner slot and are not per-user.
 - For a few seconds after a guide refresh, new channels can show in lists before they are tagged. Playback is still
   enforced during that time.
-- Accepted risks (denial of service by device ID, raw logo URLs in image info) are documented in
-  [`docs/research.md`](docs/research.md) under "Remaining gaps".
 
 ## Development
 
@@ -123,18 +166,20 @@ Layout:
 | `src/Jellyfin.Plugin.LiveTvAccess` | The plugin: request filter, tag sync, config page, self-check, status API. |
 | `tests/` | xUnit unit tests for both projects. |
 | `scripts/` | Packaging, local deploy, and live acceptance/scale tests against a local Jellyfin. |
-| `docker-compose.yml`, `tuners/`, `fakestreams/` | A local Jellyfin 10.11.11 with two fake M3U tuners. |
+| `docker-compose.12.yml`, `tuners/`, `fakestreams/` | A local Jellyfin 12.2 with two fake M3U tuners (`docker-compose.yml` is the 10.11.11 stack). |
 | `docs/` | Design research, deployment runbook, real-client test plan, progress log. |
 | `review/` | Findings from independent code reviews. |
 
 ### Local test stack
 
 ```sh
-docker compose up -d                       # Jellyfin at http://localhost:8096, fake streams on :8081
-cp .env.example .env                       # then add an API key from your LOCAL Jellyfin
-scripts/deploy_local.sh                    # build, install into ./local/config/plugins, restart
-python3 scripts/gate3_test.py              # live acceptance test (local only)
+docker compose -f docker-compose.12.yml up -d   # Jellyfin 12.2 at http://localhost:8097
+cp .env.example .env                            # then add JELLYFIN_API_KEY_12 from your LOCAL Jellyfin
+scripts/deploy_local12.sh                       # build, install into ./local12/config/plugins, restart
 ```
+
+Server preparation and the environment variables that point `scripts/gate3_test.py` (the live acceptance test,
+local only) at the 12.2 stack are in [`docs/port-12-setup.md`](docs/port-12-setup.md).
 
 `test-media/` is gitignored, so on a fresh clone put two short H.264 clips there named `clip1.mp4` and `clip2.mp4`
 (any small videos will do). Then `scripts/make_ts_fixture.sh` builds `live1.ts` from `clip1.mp4`, and
