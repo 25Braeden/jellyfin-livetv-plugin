@@ -1,5 +1,7 @@
 # LiveTvAccess: per-user Live TV tuners for Jellyfin
 
+<img src="assets/livetvaccess.png" alt="LiveTvAccess TV and access keyhole logo" width="420">
+
 A Jellyfin server plugin that gives each user their own Live TV tuner. It works with the official Jellyfin apps and
 needs no client changes.
 
@@ -13,13 +15,14 @@ Say you run one Jellyfin server with two M3U tuners (for example, two IPTV provi
 - A user can't run two Live TV streams at once, so nobody can use both tuners.
 - Admins are never restricted.
 
-> **This branch (`jellyfin-12.2`) is for Jellyfin 12.2.** For Jellyfin 10.11.11, use the
+> **This branch (`jellyfin-12.2`) is for Jellyfin 12.2 and tested on 12.4.0.** For Jellyfin 10.11.11, use the
 > [`main` branch](https://github.com/25Braeden/jellyfin-livetv-plugin/tree/main).
 
 | Jellyfin | Branch | Status |
 |---|---|---|
 | 10.11.11 | [`main`](https://github.com/25Braeden/jellyfin-livetv-plugin/tree/main) | tested (Gate 3 224/224, Core/plugin tests) |
 | 12.2 | `jellyfin-12.2` (this branch) | tested (Gate 3 224/224); no real-client smoke test yet |
+| 12.4.0 | `jellyfin-12.2` (this branch) | verified locally (244/244 checks); production health checks and a real-provider HLS segment passed; device UI testing remains incomplete |
 
 A build from one branch does **not** work on the other server version. Jellyfin loads a plugin only if the server
 version is >= the plugin's `targetAbi`, and the two branches target different .NET runtimes (`net10.0` here,
@@ -27,7 +30,7 @@ version is >= the plugin's `targetAbi`, and the two branches target different .N
 12.2.0.0 and 10.11 runs on .NET 9), and the 10.11 build is not supported on 12.2 (Jellyfin may try to load it, but
 it was built against 10.11 APIs). Build from the branch that matches your server.
 
-> **Status: v0.1.0, 12.2 port.** The plugin is pinned to Jellyfin 12.2 (see [Compatibility](#compatibility)). It
+> **Status: v0.1.0.1, 12.2 port.** The plugin is built against Jellyfin 12.2 and has also been checked on 12.4.0 (see [Compatibility](#compatibility)). It
 > passes the automated test suite and the live acceptance script (Gate 3, 224/224) on a local 12.2 server, but it
 > has not yet been confirmed with any real client (web, Android TV, iOS); the plan is in
 > [`docs/gate5-test-plan.md`](docs/gate5-test-plan.md). Try it on a test server first, and read [Known limitations / not yet verified](#known-limitations--not-yet-verified).
@@ -59,10 +62,10 @@ The design notes, with Jellyfin source file and line references for every hook t
 
 ## Compatibility
 
-- **Jellyfin 12.2 only** (official `jellyfin/jellyfin` image, tested with the `12.2` tag).
+- **Built against Jellyfin 12.2; also verified on 12.4.0** (official `jellyfin/jellyfin` images).
   Port notes and the 12.2 source review are in [`docs/research.md`](docs/research.md) and
   [`docs/port-12-setup.md`](docs/port-12-setup.md). The plugin relies on Jellyfin internals (endpoint argument
-  names, response shapes, the channel ID scheme, the `RefreshGuide` task key). On any other version the self-check is expected to fail and Live TV is denied to non-admins. Don't upgrade Jellyfin
+  names, response shapes, the channel ID scheme, the `RefreshGuide` task key). An endpoint incompatibility causes the self-check to fail and Live TV is denied to non-admins. Don't upgrade Jellyfin
   before re-testing the plugin against the new version.
 - **Pin your server image** to an exact version (the full 12.2.x patch tag you tested, or an image digest) in
   Docker Compose, not `latest` or a floating tag, so an automatic pull can't upgrade Jellyfin underneath the plugin.
@@ -72,7 +75,24 @@ The design notes, with Jellyfin source file and line references for every hook t
 
 ## Install
 
-You build the plugin yourself; there is no plugin repository or prebuilt download yet.
+### Plugin catalog
+
+In **Dashboard → Plugins → Repositories**, add **LiveTvAccess** with this URL:
+
+```text
+https://raw.githubusercontent.com/25Braeden/jellyfin-livetv-plugin/main/manifest.json
+```
+
+Then open **Catalog**, select **LiveTvAccess**, install it, and restart Jellyfin.
+The catalog includes the description, developer name, artwork, and verified download checksum.
+Configure the tuner/user mappings under **Settings**; unconfigured non-admin Live TV access is denied.
+Manually installed users can add the repository without deleting their plugin configuration.
+
+For Jellyfin 10.11.11, use `manifest-10.11.json` instead. The .NET 9 and .NET 10 builds are not interchangeable.
+Prebuilt ZIPs are also on the [GitHub releases page](https://github.com/25Braeden/jellyfin-livetv-plugin/releases).
+Extract a ZIP into its own `LiveTvAccess_<version>` plugin folder, with DLLs and `meta.json` directly inside.
+
+### Build this branch manually
 
 1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 2. Build and package it:
@@ -81,9 +101,9 @@ You build the plugin yourself; there is no plugin repository or prebuilt downloa
    scripts/package_release.sh
    ```
 
-   This creates `dist/LiveTvAccess_0.1.0.0/` (two DLLs and a `meta.json`) and `dist/LiveTvAccess_0.1.0.0.tar.gz`, and
-   prints SHA-256 sums.
-3. Copy the `LiveTvAccess_0.1.0.0` folder into your Jellyfin `plugins/` directory (for the Docker image, that is
+   This creates `dist/LiveTvAccess_0.1.0.1/` (two DLLs and a `meta.json`), a manual-deploy tarball, and
+   `dist/LiveTvAccess_0.1.0.1_jellyfin-12.2.zip` for the catalog, and prints SHA-256 sums.
+3. Copy the `LiveTvAccess_0.1.0.1` folder into your Jellyfin `plugins/` directory (for the Docker image, that is
    `/config/plugins/`, owned by the user Jellyfin runs as) and restart Jellyfin.
 4. In Jellyfin, for each M3U tuner under *Dashboard > Live TV*, set **Simultaneous stream limit** to `1`.
 5. Open *Dashboard > Plugins > LiveTvAccess* and configure it (below).
@@ -91,6 +111,8 @@ You build the plugin yourself; there is no plugin repository or prebuilt downloa
 [`docs/deploy.md`](docs/deploy.md) is a full step-by-step runbook (pre-flight checklist, config pre-seeding so
 there is no unprotected gap, backup, verification, troubleshooting and rollback). It was written for a Docker
 Compose setup behind Caddy, so adjust the paths for your own layout.
+
+For publishing catalog updates, see [catalog maintenance](docs/catalog.md).
 
 ## Configure
 

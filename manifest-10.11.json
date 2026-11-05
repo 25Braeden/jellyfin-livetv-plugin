@@ -1,0 +1,21 @@
+[
+  {
+    "category": "Live TV",
+    "guid": "4d5aa36c-9164-4f4d-ba7f-0fa6c25bfd28",
+    "name": "LiveTvAccess",
+    "description": "Assign an M3U Live TV tuner to each Jellyfin user. Each non-administrator can browse and play only the channels and guide programs belonging to their assigned tuner. Unassigned users receive no Live TV access, while administrators remain unrestricted. Includes a tuner assignment page and compatibility health checks. Set each tuner's simultaneous stream limit to 1 to limit concurrent use. Requires separate playlists with no shared stream URLs.",
+    "overview": "Per-user M3U tuner access with channel and playback restrictions.",
+    "owner": "25Braeden",
+    "imageUrl": "https://raw.githubusercontent.com/25Braeden/jellyfin-livetv-plugin/main/assets/livetvaccess.png",
+    "versions": [
+      {
+        "version": "0.1.0.1",
+        "changelog": "Expanded plugin description and catalog branding; tuner/access code unchanged.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/25Braeden/jellyfin-livetv-plugin/releases/download/v0.1.0.1/LiveTvAccess_0.1.0.1_jellyfin-10.11.zip",
+        "checksum": "7c55e3c7b49b8f1b1f3cf0a0372fbd31",
+        "timestamp": "2026-11-05T22:49:23Z"
+      }
+    ]
+  }
+]
