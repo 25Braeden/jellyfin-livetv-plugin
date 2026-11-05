@@ -44,7 +44,12 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override Guid Id => Guid.Parse("4d5aa36c-9164-4f4d-ba7f-0fa6c25bfd28");
 
     /// <inheritdoc />
-    public override string Description => "Per-user Live TV tuner access.";
+    public override string Description =>
+        "Assign an M3U Live TV tuner to each Jellyfin user. Each non-administrator can browse and play only "
+        + "the channels and guide programs belonging to their assigned tuner. Unassigned users receive no Live TV access, "
+        + "while administrators remain unrestricted. Includes a tuner assignment page and compatibility health checks. "
+        + "Set each tuner's simultaneous stream limit to 1 to limit concurrent use. "
+        + "Requires separate playlists with no shared stream URLs.";
 
     /// <summary>
     /// Gets the current plugin instance.

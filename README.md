@@ -1,5 +1,7 @@
 # LiveTvAccess: per-user Live TV tuners for Jellyfin
 
+<img src="assets/livetvaccess.png" alt="LiveTvAccess TV and access keyhole logo" width="420">
+
 A Jellyfin server plugin that gives each user their own Live TV tuner. It works with the official Jellyfin apps and
 needs no client changes.
 
@@ -20,6 +22,7 @@ Say you run one Jellyfin server with two M3U tuners (for example, two IPTV provi
 |---|---|---|
 | 10.11.11 | `main` (this branch) | tested (Gate 3 224/224, Core/plugin tests) |
 | 12.2 | [`jellyfin-12.2`](https://github.com/25Braeden/jellyfin-livetv-plugin/tree/jellyfin-12.2) | tested (Gate 3 224/224); no real-client smoke test yet |
+| 12.4.0 | [`jellyfin-12.2`](https://github.com/25Braeden/jellyfin-livetv-plugin/tree/jellyfin-12.2) | 12.2 build verified locally (244/244 checks); production health checks and a real-provider HLS segment passed; device UI testing remains incomplete |
 
 A build from one branch does **not** work on the other server version. Jellyfin loads a plugin only if the server
 version is >= the plugin's `targetAbi`, and the two branches target different .NET runtimes (`net9.0` here,
@@ -27,7 +30,7 @@ version is >= the plugin's `targetAbi`, and the two branches target different .N
 supported on 12.2 (Jellyfin may try to load it, but it was built against 10.11 APIs). Build from the branch that
 matches your server.
 
-> **Status: v0.1.0.** The plugin is pinned to Jellyfin 10.11.11 (see [Compatibility](#compatibility)). It has a
+> **Status: v0.1.0.1.** This source branch targets Jellyfin 10.11.11 (see [Compatibility](#compatibility)). It has a
 > large automated test suite and a live acceptance script, but it has not yet been confirmed with real Android TV
 > and iOS clients (the plan is in [`docs/gate5-test-plan.md`](docs/gate5-test-plan.md)). Try it on a test server
 > first, and read [Known limitations / not yet verified](#known-limitations--not-yet-verified).
@@ -71,7 +74,26 @@ The design notes, with Jellyfin source file and line references for every hook t
 
 ## Install
 
-You build the plugin yourself; there is no plugin repository or prebuilt download yet.
+### Plugin catalog
+
+In **Dashboard → Plugins → Repositories**, add a repository named **LiveTvAccess**
+using the URL for your server version:
+
+| Server | Repository URL |
+|---|---|
+| Jellyfin 12.2 / 12.4 | `https://raw.githubusercontent.com/25Braeden/jellyfin-livetv-plugin/main/manifest.json` |
+| Jellyfin 10.11.11 | `https://raw.githubusercontent.com/25Braeden/jellyfin-livetv-plugin/main/manifest-10.11.json` |
+
+Then open **Catalog**, select **LiveTvAccess**, install it, and restart Jellyfin.
+Use only the matching repository: the .NET 9 and .NET 10 builds are not interchangeable.
+The catalog includes the plugin description, developer name, artwork, and verified download checksum.
+Configure the tuner/user mappings under **Settings**; unconfigured non-admin Live TV access is denied.
+Manually installed users can add the repository without deleting their plugin configuration.
+
+Prebuilt ZIPs are also available on the [GitHub releases page](https://github.com/25Braeden/jellyfin-livetv-plugin/releases).
+Extract a ZIP into its own `LiveTvAccess_<version>` plugin folder; its DLLs and `meta.json` go directly inside.
+
+### Build this branch manually
 
 1. Install the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 2. Build and package it:
@@ -80,9 +102,9 @@ You build the plugin yourself; there is no plugin repository or prebuilt downloa
    scripts/package_release.sh
    ```
 
-   This creates `dist/LiveTvAccess_0.1.0.0/` (two DLLs and a `meta.json`) and `dist/LiveTvAccess_0.1.0.0.tar.gz`, and
-   prints SHA-256 sums.
-3. Copy the `LiveTvAccess_0.1.0.0` folder into your Jellyfin `plugins/` directory (for the Docker image, that is
+   This creates `dist/LiveTvAccess_0.1.0.1/` (two DLLs and a `meta.json`), a manual-deploy tarball, and
+   `dist/LiveTvAccess_0.1.0.1_jellyfin-10.11.zip` for the catalog, and prints SHA-256 sums.
+3. Copy the `LiveTvAccess_0.1.0.1` folder into your Jellyfin `plugins/` directory (for the Docker image, that is
    `/config/plugins/`, owned by the user Jellyfin runs as) and restart Jellyfin.
 4. In Jellyfin, for each M3U tuner under *Dashboard > Live TV*, set **Simultaneous stream limit** to `1`.
 5. Open *Dashboard > Plugins > LiveTvAccess* and configure it (below).
@@ -90,6 +112,8 @@ You build the plugin yourself; there is no plugin repository or prebuilt downloa
 [`docs/deploy.md`](docs/deploy.md) is a full step-by-step runbook (pre-flight checklist, config pre-seeding so
 there is no unprotected gap, backup, verification, troubleshooting and rollback). It was written for a Docker
 Compose setup behind Caddy, so adjust the paths for your own layout.
+
+For publishing catalog updates, see [catalog maintenance](docs/catalog.md).
 
 ## Configure
 
